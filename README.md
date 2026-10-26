@@ -16,7 +16,7 @@ No Windows:
 .\lia-forge.cmd
 ```
 
-O bootstrap detecta Python 3.8+, Node.js 22.12+, npm, Blender, Krita e os agentes/runtimes já instalados. Instala as dependências do projeto quando necessário e abre uma janela própria Electron — sem misturar o painel com as guias do navegador. O launcher antigo `spriteforge` / `spriteforge.cmd` continua como alias de compatibilidade.
+O bootstrap detecta Python 3.8+, Node.js 22.12+, npm, Blender (incluindo instalações em bibliotecas Steam no Windows), Krita e os agentes/runtimes já instalados. Instala as dependências do projeto quando necessário e abre uma janela própria Electron — sem misturar o painel com as guias do navegador. O launcher antigo `spriteforge` / `spriteforge.cmd` continua como alias de compatibilidade.
 
 No primeiro uso, Blender e Krita são opcionais e o bootstrap pede confirmação antes de instalá-los. A instalação das dependências Electron precisa baixar o runtime oficial do Electron. O bootstrap **não instala ComfyUI, drivers, `comfy-mcp`, modelos ou pesos**.
 

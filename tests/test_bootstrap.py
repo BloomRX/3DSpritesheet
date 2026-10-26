@@ -8,6 +8,7 @@ from scripts.spriteforge_launcher import (
     BootstrapError,
     build_parser,
     comfyui_server_status,
+    ensure_recommended_apps,
     model_slug,
     model_target_path,
     node_version_meets_minimum,
@@ -78,6 +79,51 @@ class BootstrapHelpersTest(unittest.TestCase):
             status = tool_status("npm")
         self.assertFalse(status["installed"])
         self.assertEqual(status["path"], r"C:\Program Files\nodejs\npm.CMD")
+
+    def test_blender_installed_in_external_steam_library_is_detected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temp_root = Path(directory)
+            steam_root = temp_root / "Steam"
+            library = temp_root / "SteamLibrary"
+            (steam_root / "steamapps").mkdir(parents=True)
+            vdf = (
+                '"libraryfolders"\n{\n'
+                f'  "0"\n  {{\n    "path" "{steam_root}"\n  }}\n'
+                f'  "1"\n  {{\n    "path" "{library}"\n  }}\n'
+                '}\n'
+            )
+            (steam_root / "steamapps" / "libraryfolders.vdf").write_text(vdf, encoding="utf-8")
+            blender = library / "steamapps" / "common" / "Blender" / "blender.exe"
+            blender.parent.mkdir(parents=True)
+            blender.write_bytes(b"test executable")
+
+            with patch("scripts.spriteforge_launcher.platform.system", return_value="Windows"), patch(
+                "scripts.spriteforge_launcher.steam_install_roots", return_value=[steam_root]
+            ), patch("scripts.spriteforge_launcher.shutil.which", return_value=None), patch(
+                "scripts.spriteforge_launcher.read_version", return_value=("Blender 4.5.0", 4)
+            ), patch.dict("os.environ", {"ProgramFiles": str(temp_root / "Program Files")}):
+                status = tool_status("blender")
+
+        self.assertTrue(status["installed"])
+        self.assertEqual(status["path"], str(blender))
+        self.assertEqual(status["version"], "Blender 4.5.0")
+
+    def test_recommended_apps_prompt_excludes_apps_already_installed(self):
+        def status_for(name):
+            return {"installed": name == "blender"}
+
+        with patch("scripts.spriteforge_launcher.tool_status", side_effect=status_for), patch(
+            "scripts.spriteforge_launcher.ask_yes_no", return_value=False
+        ) as ask:
+            missing = ensure_recommended_apps(
+                {"bootstrap": {"recommendedApps": ["blender", "krita"]}},
+                yes=False,
+                no_tools=False,
+                dry_run=False,
+            )
+
+        self.assertEqual(missing, ["krita"])
+        self.assertEqual(ask.call_args[0][0], "Instalar agora: Krita?")
 
     def test_windows_doctor_without_python_exits_before_install_logic(self):
         launcher = (Path(__file__).resolve().parents[1] / "spriteforge.cmd").read_text(encoding="utf-8")

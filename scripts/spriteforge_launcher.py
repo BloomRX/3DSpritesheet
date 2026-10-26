@@ -131,6 +131,75 @@ def run_command(command: list[str], *, cwd: Path | None = None, capture: bool = 
     return result
 
 
+def steam_install_roots() -> list[Path]:
+    """Locate Steam roots from environment, common install paths, and Windows registry."""
+    if platform.system() != "Windows":
+        return []
+
+    roots: list[Path] = []
+    for variable in ("STEAM_DIR", "STEAM_PATH", "STEAMROOT", "SteamPath"):
+        value = os.environ.get(variable)
+        if value:
+            roots.append(Path(value))
+    for variable in ("ProgramFiles(x86)", "ProgramFiles"):
+        value = os.environ.get(variable)
+        if value:
+            roots.append(Path(value) / "Steam")
+
+    try:
+        import winreg
+    except ImportError:
+        winreg = None
+    if winreg is not None:
+        registry_locations = (
+            (winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam", "SteamPath"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Valve\Steam", "InstallPath"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath"),
+        )
+        for hive, key_name, value_name in registry_locations:
+            try:
+                with winreg.OpenKey(hive, key_name) as key:
+                    value, _ = winreg.QueryValueEx(key, value_name)
+                if value:
+                    roots.append(Path(str(value)))
+            except OSError:
+                continue
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = os.path.normpath(str(root)).casefold()
+        if key not in seen:
+            seen.add(key)
+            unique.append(root)
+    return unique
+
+
+def steam_library_paths() -> list[Path]:
+    """Return the Steam install root and library folders from libraryfolders.vdf."""
+    libraries: list[Path] = []
+    for root in steam_install_roots():
+        libraries.append(root)
+        manifest = root / "steamapps" / "libraryfolders.vdf"
+        try:
+            content = manifest.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for match in re.finditer(r'(?m)^\s*"path"\s*"((?:\\.|[^"])*)"\s*$', content):
+            value = match.group(1).replace(r"\\", "\\").replace(r'\"', '"')
+            if value:
+                libraries.append(Path(value))
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for library in libraries:
+        key = os.path.normpath(str(library)).casefold()
+        if key not in seen:
+            seen.add(key)
+            unique.append(library)
+    return unique
+
+
 def app_candidates(name: str) -> list[Path]:
     system = platform.system()
     candidates: list[Path] = []
@@ -170,6 +239,10 @@ def app_candidates(name: str) -> list[Path]:
         if system == "Windows":
             base = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Blender Foundation"
             candidates += sorted(base.glob("Blender*/blender.exe"), reverse=True)
+            for library in steam_library_paths():
+                common = library / "steamapps" / "common"
+                candidates += [common / "Blender" / "blender.exe"]
+                candidates += sorted(common.glob("Blender*/blender.exe"), reverse=True)
         elif system == "Darwin":
             candidates += [Path("/Applications/Blender.app/Contents/MacOS/Blender"), Path("/opt/homebrew/bin/blender"), Path("/usr/local/bin/blender")]
         else:
