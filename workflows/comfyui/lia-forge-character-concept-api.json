@@ -1,0 +1,107 @@
+{
+  "1": {
+    "inputs": {
+      "ckpt_name": "__SELECT_A_COMPATIBLE_CHECKPOINT__"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {
+      "title": "Checkpoint (choose a compatible model)"
+    }
+  },
+  "2": {
+    "inputs": {
+      "text": "Character concept exploration for a 2D game: one memorable full-body fantasy character, front / three-quarter / side / back turnaround views arranged as a clean design sheet, neutral relaxed pose, consistent costume and silhouette in every view, clear proportions at small sprite scale, restrained materials and color palette, plain light background, no labels, no watermark. Concept reference only; do not render a finished game sprite.",
+      "clip": [
+        "1",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Positive prompt · character concept"
+    }
+  },
+  "3": {
+    "inputs": {
+      "text": "multiple characters, different outfits between views, cropped body, action pose, perspective distortion, busy background, text, logo, watermark, frame, sprite atlas, pixelated image",
+      "clip": [
+        "1",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Negative prompt"
+    }
+  },
+  "4": {
+    "inputs": {
+      "width": 768,
+      "height": 512,
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "Concept sheet canvas"
+    }
+  },
+  "5": {
+    "inputs": {
+      "seed": 285104771,
+      "steps": 24,
+      "cfg": 6.5,
+      "sampler_name": "euler",
+      "scheduler": "normal",
+      "denoise": 1,
+      "model": [
+        "1",
+        0
+      ],
+      "positive": [
+        "2",
+        0
+      ],
+      "negative": [
+        "3",
+        0
+      ],
+      "latent_image": [
+        "4",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "Sample concept"
+    }
+  },
+  "6": {
+    "inputs": {
+      "samples": [
+        "5",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "Decode image"
+    }
+  },
+  "7": {
+    "inputs": {
+      "filename_prefix": "LiaForge/Concepts/Character",
+      "images": [
+        "6",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save concept sheet"
+    }
+  }
+}

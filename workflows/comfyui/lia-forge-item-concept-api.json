@@ -1,0 +1,107 @@
+{
+  "1": {
+    "inputs": {
+      "ckpt_name": "__SELECT_A_COMPATIBLE_CHECKPOINT__"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {
+      "title": "Checkpoint (choose a compatible model)"
+    }
+  },
+  "2": {
+    "inputs": {
+      "text": "Game asset concept exploration: one distinctive fantasy weapon, tool or prop shown as a clean front / side design sheet, same object and scale in both views, readable silhouette at small game scale, controlled studio lighting, simple neutral background, no hands, no labels, no text, no watermark. Concept reference only; do not render a finished game sprite.",
+      "clip": [
+        "1",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Positive prompt · item concept"
+    }
+  },
+  "3": {
+    "inputs": {
+      "text": "multiple unrelated objects, inconsistent shape between views, human hand, cropped object, perspective distortion, busy background, text, logo, watermark, frame, sprite atlas, pixelated image",
+      "clip": [
+        "1",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Negative prompt"
+    }
+  },
+  "4": {
+    "inputs": {
+      "width": 768,
+      "height": 512,
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "Concept sheet canvas"
+    }
+  },
+  "5": {
+    "inputs": {
+      "seed": 285104772,
+      "steps": 24,
+      "cfg": 6.5,
+      "sampler_name": "euler",
+      "scheduler": "normal",
+      "denoise": 1,
+      "model": [
+        "1",
+        0
+      ],
+      "positive": [
+        "2",
+        0
+      ],
+      "negative": [
+        "3",
+        0
+      ],
+      "latent_image": [
+        "4",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "Sample concept"
+    }
+  },
+  "6": {
+    "inputs": {
+      "samples": [
+        "5",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "Decode image"
+    }
+  },
+  "7": {
+    "inputs": {
+      "filename_prefix": "LiaForge/Concepts/Item",
+      "images": [
+        "6",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save concept sheet"
+    }
+  }
+}

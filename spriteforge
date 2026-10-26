@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Cross-platform Unix bootstrap shim. Python implementation is standard-library-only.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AUTO_YES=0
+DRY_RUN=0
+for arg in "$@"; do
+  [[ "$arg" == "--yes" ]] && AUTO_YES=1
+  [[ "$arg" == "--dry-run" ]] && DRY_RUN=1
+done
+
+python_ok() {
+  local candidate="$1"
+  "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 8) else 1)' >/dev/null 2>&1
+}
+PYTHON=""
+for candidate in python3 python; do
+  if command -v "$candidate" >/dev/null 2>&1 && python_ok "$candidate"; then
+    PYTHON="$(command -v "$candidate")"
+    break
+  fi
+done
+
+install_python() {
+  local os_name="$(uname -s)"
+  local manager=""
+  local prefix=()
+  if [[ "$os_name" == "Darwin" ]]; then
+    if command -v brew >/dev/null 2>&1; then
+      manager="$(command -v brew)"
+      local command=("$manager" install python)
+    else
+      echo "Homebrew não encontrado. Instale Python 3.8+ (ou Homebrew) e rode ./lia-forge novamente." >&2
+      return 1
+    fi
+  elif command -v apt-get >/dev/null 2>&1; then
+    manager="$(command -v apt-get)"
+    if [[ "$(id -u)" != "0" ]]; then prefix=(sudo); fi
+    local update=("${prefix[@]}" "$manager" update)
+    local command=("${prefix[@]}" "$manager" install -y python3)
+  elif command -v dnf >/dev/null 2>&1; then
+    manager="$(command -v dnf)"
+    if [[ "$(id -u)" != "0" ]]; then prefix=(sudo); fi
+    local command=("${prefix[@]}" "$manager" install -y python3)
+  elif command -v pacman >/dev/null 2>&1; then
+    manager="$(command -v pacman)"
+    if [[ "$(id -u)" != "0" ]]; then prefix=(sudo); fi
+    local command=("${prefix[@]}" "$manager" -S --needed python)
+  else
+    echo "Não encontrei apt, dnf, pacman ou Homebrew. Instale Python 3.8+ manualmente e tente de novo." >&2
+    return 1
+  fi
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    if [[ -n "${update+x}" ]]; then printf '  $'; printf ' %q' "${update[@]}"; printf '\n'; fi
+    printf '  $'; printf ' %q' "${command[@]}"; printf '\n'
+    echo "Python ausente; dry-run não instala nada."
+    return 2
+  fi
+  if [[ "$AUTO_YES" != "1" && -t 0 ]]; then
+    read -r -p "Python 3.8+ é necessário. Instalar pelo gerenciador do sistema? [S/n] " answer
+    answer_lower="$(printf '%s' "$answer" | tr '[:upper:]' '[:lower:]')"
+    if [[ "$answer_lower" == "n" || "$answer_lower" == "não" ]]; then
+      echo "Instale Python 3.8+ manualmente e rode ./lia-forge novamente." >&2
+      return 1
+    fi
+  elif [[ "$AUTO_YES" != "1" && ! -t 0 ]]; then
+    echo "Python 3.8+ está ausente. Use --yes para permitir a instalação ou instale-o manualmente." >&2
+    return 1
+  fi
+  if [[ -n "${update+x}" ]]; then "${update[@]}" || echo "Aviso: atualização dos índices falhou; tentando instalar mesmo assim." >&2; fi
+  "${command[@]}"
+  for candidate in python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1 && python_ok "$candidate"; then
+      PYTHON="$(command -v "$candidate")"
+      return 0
+    fi
+  done
+  echo "Python foi instalado, mas não aparece no PATH. Reabra o terminal e tente novamente." >&2
+  return 1
+}
+
+if [[ -z "$PYTHON" ]]; then
+  echo "Lia Forge precisa de Python 3.8+ para preparar o ambiente."
+  if [[ "$DRY_RUN" == "1" ]]; then
+    install_python || true
+    exit 0
+  fi
+  install_python || exit $?
+fi
+exec "$PYTHON" "$ROOT/scripts/spriteforge_launcher.py" "$@"

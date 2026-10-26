@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Backwards-compatible desktop launcher for the Lia Forge application.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$ROOT/spriteforge" "$@"

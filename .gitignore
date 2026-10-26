@@ -1,0 +1,11 @@
+node_modules/
+dist/
+release/
+.vite/
+.spriteforge/
+.DS_Store
+*.log
+__pycache__/
+*.py[cod]
+.env*
+!.env.example

@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spriteforge.local/schemas/asset-task-v2.schema.json",
+  "title": "Lia Forge Asset Task",
+  "description": "Tarefa local de produção 3D-to-2D para personagem ou item, retomável a partir de um ponto de entrada com artefatos existentes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "project",
+    "createdAt",
+    "agent",
+    "asset",
+    "workflow",
+    "constraints"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "2.0" },
+    "project": { "type": "string", "minLength": 1 },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "agent": { "enum": ["claude", "codex", "opencode", "agnostic"] },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "type",
+        "subtype",
+        "brief",
+        "visualPrompt",
+        "referenceFile",
+        "targetFrameSize",
+        "outputPath",
+        "animations",
+        "workflowId",
+        "startStageIndex",
+        "existingInputs"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "type": { "enum": ["character", "item"] },
+        "subtype": { "type": ["string", "null"] },
+        "brief": { "type": "string" },
+        "visualPrompt": { "type": "string" },
+        "referenceFile": { "type": ["string", "null"] },
+        "targetFrameSize": { "type": "string" },
+        "outputPath": { "type": "string", "minLength": 1 },
+        "animations": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "workflowId": { "const": "3d_to_2d" },
+        "startStageIndex": { "type": "integer", "minimum": 0, "maximum": 4 },
+        "existingInputs": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "stageIndex"],
+            "properties": {
+              "path": { "type": "string", "minLength": 1 },
+              "stageIndex": { "type": "integer", "minimum": 0, "maximum": 4 }
+            }
+          }
+        }
+      }
+    },
+    "workflow": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "order", "name", "output", "optional", "execution"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "order": { "type": "integer", "minimum": 1, "maximum": 5 },
+          "name": { "type": "string", "minLength": 1 },
+          "output": { "type": "string", "minLength": 1 },
+          "optional": { "type": "boolean" },
+          "execution": { "enum": ["run", "skip"] }
+        }
+      }
+    },
+    "constraints": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    }
+  }
+}
