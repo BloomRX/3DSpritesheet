@@ -24,13 +24,18 @@ if not defined SF_PY (
 
 if not defined SF_PY (
   echo Lia Forge precisa de Python 3.8+ para preparar o ambiente.
+  if /I "%~1"=="doctor" (
+    echo O comando doctor nao instala Python e nao pode rodar sem esse requisito.
+    echo Instale Python 3.8+ e reabra o PowerShell antes de executar doctor novamente.
+    exit /b 1
+  )
   if defined SF_DRYRUN (
     echo Dry-run: nenhuma instalacao feita; instale Python manualmente para executar o plano completo.
     exit /b 0
   )
   where winget >nul 2>nul
   if errorlevel 1 (
-    echo Instale Python 3.8+ ou o Windows Package Manager (winget), depois rode lia-forge.cmd novamente.
+    echo Instale Python 3.8+ ou o Windows Package Manager, winget, e execute lia-forge.cmd novamente.
     exit /b 1
   )
   echo Instalarei Python 3.12 pelo winget. O instalador pode pedir permissao do Windows.

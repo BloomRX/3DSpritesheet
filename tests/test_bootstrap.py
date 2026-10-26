@@ -58,6 +58,14 @@ class BootstrapHelpersTest(unittest.TestCase):
         self.assertFalse(status["running"])
         self.assertEqual(status["endpoint"], "http://127.0.0.1:1")
 
+    def test_windows_doctor_without_python_exits_before_install_logic(self):
+        launcher = (Path(__file__).resolve().parents[1] / "spriteforge.cmd").read_text(encoding="utf-8")
+        self.assertIn('if /I "%~1"=="doctor" (', launcher)
+        doctor_block = launcher.split('if /I "%~1"=="doctor" (', 1)[1].split("  )", 1)[0]
+        self.assertIn("exit /b 1", doctor_block)
+        self.assertNotIn("winget install", doctor_block)
+        self.assertNotIn("(winget)", launcher)
+
 
 if __name__ == "__main__":
     unittest.main()
