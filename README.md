@@ -1,6 +1,6 @@
 # Lia Forge — Game Asset Studio
 
-A Lia Forge organiza briefs e handoffs para produzir **personagens e itens/armas/ferramentas** por 3D → 2D. O usuário pode entrar do zero (prompt com referência opcional) ou retomar de conceitos, poses, modelos 3D e rigs existentes, sem refazer etapas anteriores. Veja [`docs/usage-workflows.md`](docs/usage-workflows.md) para o fluxo-alvo e rotas previstas.
+A Lia Forge organiza o fluxo de produção de **personagens e itens/armas/ferramentas** por 3D → 2D. Agentes são opcionais: você pode editar briefs, trabalhar manualmente nas suas ferramentas e registrar outputs reais, ou preparar um handoff para delegar. O usuário pode começar do zero ou retomar de conceitos, poses, modelos 3D e rigs existentes, sem refazer etapas anteriores. Veja [`docs/usage-workflows.md`](docs/usage-workflows.md) para o fluxo-alvo e rotas previstas.
 
 ## Abrir em janela desktop
 
@@ -69,15 +69,16 @@ Os arquivos configurados ficam em `.spriteforge/models/`, ignorado pelo Git. O d
 - Workspace para personagens e itens com briefs, imagens de referência, escolha do ponto de entrada no fluxo 3D → 2D, caminhos de artefatos existentes, animações e destinos planejados.
 - Indicadores de atividade local, tarefas registradas via MCP, fila ComfyUI e dispositivos reportados.
 - Workflows ComfyUI de conceito exportáveis, sem checkpoint selecionado.
-- Handoff estruturado para Claude Code, Codex, OpenCode ou outro agente, com JSON de tarefa e contrato de saídas.
-- Servidor MCP para briefs, tarefas e validação de saídas reais; ferramentas `spriteforge_*` mantidas por compatibilidade.
+- Modo sem agente na interface desktop: abra o Blender detectado (incluindo instalação Steam), o ComfyUI local quando estiver ativo ou escolha outro aplicativo instalado; a ferramenta abre com a pasta da etapa como diretório de trabalho. O brief exporta `brief.md`; depois, registre os arquivos reais. Nada é instalado automaticamente.
+- Handoff estruturado opcional para Claude Code, Codex, OpenCode ou outro agente, com JSON de tarefa e contrato de saídas.
+- Servidor MCP opcional para briefs, tarefas e validação de saídas reais; ferramentas `spriteforge_*` mantidas por compatibilidade.
 - Armazenamento local: `.spriteforge/assets.json` no projeto/workspace; executável instalado sem projeto usa `Documents/Lia Forge`.
 
-## O que ainda não executa
+## Limites atuais
 
-A Lia Forge ainda não inicia agentes, não envia workflows ao ComfyUI e não gera imagens, modelos 3D, rigs, animações nem spritesheets. O botão do stage workspace prepara o handoff; uma etapa só pode ser registrada como concluída pelo MCP depois que os outputs reais existem e são verificados. Os caminhos de artefatos existentes são validados pelo MCP quando o handoff é preparado.
+A Lia Forge não inicia agentes, não envia workflows ao ComfyUI e não gera imagens, modelos 3D, rigs, animações nem spritesheets. O trabalho de criação é manual nas ferramentas escolhidas pelo usuário ou delegado a um agente. O modo manual registra apenas arquivos não vazios, de formatos esperados e dentro da pasta do asset; isso **não substitui revisão visual nem valida dimensões, alpha, rig ou qualidade artística**. O MCP continua opcional para quem prefere delegar.
 
-O app fornece interface, organização, status e handoff. A execução ainda depende de ferramentas/adapters escolhidos e instalados pelo usuário. Nenhum peso, licença ou GPU é presumido.
+Nenhum peso, licença ou GPU é presumido.
 
 ## Integração de agentes e testes
 

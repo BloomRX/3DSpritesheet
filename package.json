@@ -12,7 +12,7 @@
     "build": "vite build",
     "desktop": "electron .",
     "postinstall": "install-electron",
-    "test": "node tests/mcp-smoke.mjs && node tests/vite-store-smoke.mjs && node tests/comfyui-client-smoke.mjs && node tests/task-manager-smoke.cjs && node tests/navigation-guard-smoke.cjs",
+    "test": "node tests/mcp-smoke.mjs && node tests/vite-store-smoke.mjs && node tests/comfyui-client-smoke.mjs && node tests/task-manager-smoke.cjs && node tests/navigation-guard-smoke.cjs && node tests/manual-artifacts-smoke.cjs && node tests/external-tools-smoke.cjs",
     "preview": "vite preview --host 0.0.0.0",
     "package:win": "npm run build && electron-builder --win nsis --x64",
     "package:win:portable": "npm run build && electron-builder --win portable --x64"

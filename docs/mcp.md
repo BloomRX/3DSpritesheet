@@ -1,6 +1,6 @@
 # Lia Forge MCP e opção OpenCode + Ollama
 
-O servidor MCP local da Lia Forge conecta um agente ao workspace do jogo. Ele roda por **stdio**: não abre uma porta de rede para o MCP, não chama um provider pago e não gera arte por conta própria. O ID de configuração e os nomes de ferramentas `spriteforge_*` são mantidos para compatibilidade.
+O servidor MCP local da Lia Forge conecta um agente ao workspace do jogo quando o usuário escolhe delegar. **MCP/agente são opcionais:** no desktop, também é possível seguir manualmente, usar as próprias ferramentas e registrar arquivos reais pela UI. O servidor MCP roda por **stdio**: não abre uma porta de rede para o MCP, não chama um provider pago e não gera arte por conta própria. O ID de configuração e os nomes de ferramentas `spriteforge_*` são mantidos para compatibilidade.
 
 ## Instalação em um projeto
 
@@ -38,11 +38,11 @@ O instalador de configuração prepara Node/dependências da Lia Forge se estive
 - `spriteforge_list_assets` — briefs registrados no workspace.
 - `spriteforge_create_asset` — cria personagem ou item (`weapon`, `tool`, `prop`, `consumable`) com animações, alvo, destino e ponto de entrada opcional no fluxo 3D → 2D.
 - `spriteforge_add_reference` — copia uma imagem já existente no workspace (PNG/JPG/WEBP, até 20 MB); não busca imagens na internet.
-- `spriteforge_prepare_task` — escreve o task JSON v2 e um prompt Markdown em `.spriteforge/tasks/<id>/`; valida que `existingInputs` existem dentro do projeto e só cria `brief.md` se a tarefa começa pela direção de arte e o arquivo ainda não existe.
+- `spriteforge_prepare_task` — escreve o task JSON v2 e um prompt Markdown em `.spriteforge/tasks/<id>/`; retoma da primeira etapa pendente, acrescenta como insumos os outputs reais das etapas concluídas e respeita a etapa opcional de movimento pulada. Revalida todos os caminhos e só cria `brief.md` se a tarefa ainda começa pela direção de arte e o arquivo não existe.
 - `spriteforge_update_stage` — registra estado, observações e outputs reais; exige outputs existentes para concluir e só verifica dependências a partir do `startStageIndex`. Etapas anteriores são ignoradas, não concluídas.
 - `spriteforge_open_panel` — inicia o painel local, sem abrir uma janela do navegador.
 
-Para retomar uma tarefa, `spriteforge_create_asset` aceita `workflowId: "3d_to_2d"`, `entryPointId` (`prompt`, `brief`, `concept`, `model` ou `rigged`), `startStageIndex` e `existingInputs` (`path` relativo ao projeto e `stageIndex` da etapa que produziu o artefato). O MCP confirma que cada caminho existe antes de preparar o handoff. Não assume que arquivos fora do projeto foram copiados para ele.
+Para iniciar de um ponto específico, `spriteforge_create_asset` aceita `workflowId: "3d_to_2d"`, `entryPointId` (`prompt`, `brief`, `concept`, `model` ou `rigged`), `startStageIndex` e `existingInputs` (`path` relativo ao projeto e `stageIndex` da etapa que produziu o artefato). Depois, `spriteforge_prepare_task` observa os estados concluídos no manifesto, continua na primeira etapa ainda pendente e inclui os outputs anteriores como insumos. Etapas ignoradas antes do ponto de entrada não são refeitas; a etapa opcional de movimento de item pode estar marcada como pulada. O MCP revalida cada caminho antes de preparar o handoff e não presume que arquivos fora do projeto foram copiados para ele.
 
 O estado compartilhado fica em `.spriteforge/assets.json`; tasks, referências copiadas e logs ficam em `.spriteforge/`. Caminhos MCP são relativos à raiz do projeto e o servidor rejeita `..`, caminhos absolutos e saídas por links simbólicos para fora do workspace. A UI do Vite lê/salva o mesmo manifesto e atualiza mudanças feitas pelo MCP enquanto está aberta. Ao iniciar o painel manualmente para outro projeto, defina `SPRITEFORGE_PROJECT_ROOT` para a pasta do jogo; o launcher e a configuração MCP fazem isso automaticamente.
 

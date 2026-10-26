@@ -1,6 +1,6 @@
 # Contrato de agent handoff
 
-A Lia Forge separa o **brief do asset**, a **orquestração** e os **adapters de ferramentas**. A UI/MCP hoje cria o briefing e exporta a tarefa; o game agent (Claude Code, Codex, OpenCode ou outro) deve iniciar os subagents e os providers no ambiente local do jogo.
+A Lia Forge separa o **brief do asset**, a **orquestração** e os **adapters de ferramentas**. No desktop, o usuário pode exportar o brief, produzir em ferramentas próprias e registrar outputs reais sem agente. Se escolher delegar, a UI/MCP exporta a tarefa; o game agent (Claude Code, Codex, OpenCode ou outro) coordena subagents e ferramentas no ambiente local do projeto.
 
 ## Entrada
 

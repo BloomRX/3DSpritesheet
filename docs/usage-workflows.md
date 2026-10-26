@@ -15,6 +15,18 @@ O fluxo distingue estes estados:
 
 Não mostrar uma barra de progresso fictícia, simular geração ou promover uma prévia ilustrativa a output final.
 
+## Agente é opcional: fluxo manual
+
+A pessoa pode usar o Asset Studio sem conectar Claude Code, Codex, OpenCode ou qualquer outro agente. No desktop, cada etapa pode abrir uma ferramenta instalada diretamente da interface da Lia Forge (Blender detectado, ComfyUI local se estiver ativo ou um aplicativo escolhido pelo usuário), usando a pasta da etapa como diretório de trabalho. O usuário cria os arquivos na interface do próprio aplicativo e depois os registra na Lia Forge:
+
+- Brief: exporta `brief.md` com os campos escritos pelo usuário; pergunta antes de substituir um arquivo diferente.
+- Referências: registra imagens reais.
+- Modelo 3D: registra arquivos de cena/modelo como `.blend`, `.glb`, `.gltf`, `.fbx`, `.obj` ou `.stl`.
+- Rig/animação ou movimento: registra arquivos compatíveis; a etapa de movimento de item pode ser pulada explicitamente por ser opcional.
+- Spritesheet: exige PNG e JSON de metadados.
+
+O registro manual só aceita arquivos existentes, não vazios, dentro da pasta do asset e com extensões esperadas. Isso confirma presença/formato básico, não a qualidade visual, dimensões, alpha, integridade do rig ou correção dos metadados; a revisão continua sendo do usuário. A Lia Forge não instala as ferramentas: se um aplicativo não for detectado, o usuário pode escolher um executável já instalado. Handoff/MCP ficam disponíveis como alternativa de delegação, nunca como pré-requisito para criar briefs ou avançar o fluxo manual.
+
 ## Rota inicial disponível: 3D → 2D
 
 ### Personagem
@@ -70,4 +82,4 @@ A origem poderá ser prompt/referência, 3D, código ou materiais existentes. A 
 
 ## Estado atual da implementação
 
-A UI já prepara handoff 3D → 2D para personagem/item, registra um ponto de entrada e inclui caminhos de artefatos existentes no contrato v2. O MCP valida esses caminhos antes de preparar a tarefa e permite concluir etapas posteriores sem exigir outputs das etapas anteriores ao ponto de entrada. A execução continua externa: preparar o handoff não gera imagens, modelos, rigs ou spritesheets.
+A UI prepara handoff 3D → 2D opcional para personagem/item, registra um ponto de entrada e inclui caminhos de artefatos existentes no contrato v2. O MCP valida esses caminhos antes de preparar a tarefa; se houver etapas já concluídas no manifesto, continua da primeira pendente e inclui os outputs registrados como insumos, sem refazer o trabalho existente. No desktop, há também fluxo manual: exportar brief, abrir pasta da etapa, registrar outputs e pular a etapa opcional de movimento de item. Em ambos os modos, a Lia Forge não gera imagens, modelos, rigs ou spritesheets por conta própria.

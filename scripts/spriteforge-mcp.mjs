@@ -162,6 +162,33 @@ function stageDefinitions(type) {
   return type === 'item' ? ITEM_STAGES : CHARACTER_STAGES;
 }
 
+function assetForNextPendingStage(asset, stages) {
+  const originalStart = Math.max(0, Math.min(stages.length - 1, Number.isInteger(asset.startStageIndex) ? asset.startStageIndex : 0));
+  let nextStage = stages.length - 1;
+  for (let index = originalStart; index < stages.length; index += 1) {
+    const state = asset.stageStatus?.[index];
+    if (stages[index].optional && state?.status === 'skipped') continue;
+    const hasVerifiedOutputs = Array.isArray(state?.outputs) && state.outputs.length > 0;
+    if (state?.status === 'completed' && (hasVerifiedOutputs || stages[index].optional)) continue;
+    nextStage = index;
+    break;
+  }
+
+  const existingInputs = Array.isArray(asset.existingInputs) ? [...asset.existingInputs] : [];
+  for (let index = originalStart; index < nextStage; index += 1) {
+    const state = asset.stageStatus?.[index];
+    if (state?.status !== 'completed') continue;
+    const outputs = Array.isArray(state.outputs) ? state.outputs : [];
+    for (const output of outputs) {
+      if (!existingInputs.some((input) => input.path === output && input.stageIndex === index)) {
+        existingInputs.push({ path: output, stageIndex: index });
+      }
+    }
+  }
+  const entryPointId = ['prompt', 'brief', 'concept', 'model', 'rigged'][nextStage];
+  return { ...asset, startStageIndex: nextStage, entryPointId, existingInputs };
+}
+
 function makeAssetId(name, assets) {
   const base = slugify(name);
   if (!assets.some((asset) => asset.id === base)) return base;
@@ -463,10 +490,11 @@ registerTool(server, 'spriteforge_prepare_task', {
   },
 }, async ({ assetId, agent }) => {
   const store = await readAssetStore();
-  const asset = store.assets.find((candidate) => candidate.id === assetId);
-  if (!asset) fail(`Asset não encontrado: ${assetId}`);
-  const stages = stageDefinitions(asset.type);
-  const startStageIndex = Math.max(0, Math.min(stages.length - 1, Number.isInteger(asset.startStageIndex) ? asset.startStageIndex : 0));
+  const storedAsset = store.assets.find((candidate) => candidate.id === assetId);
+  if (!storedAsset) fail(`Asset não encontrado: ${assetId}`);
+  const stages = stageDefinitions(storedAsset.type);
+  const asset = assetForNextPendingStage(storedAsset, stages);
+  const startStageIndex = asset.startStageIndex;
   for (const [index, source] of (Array.isArray(asset.existingInputs) ? asset.existingInputs : []).entries()) {
     if (!source || typeof source.path !== 'string' || !Number.isInteger(source.stageIndex) || source.stageIndex < 0 || source.stageIndex >= startStageIndex || source.stageIndex >= stages.length) {
       fail(`Artefato existente #${index + 1} tem etapa/caminho inválido ou não é anterior ao ponto de entrada.`);

@@ -29,7 +29,6 @@ import {
   Menu,
   MoreHorizontal,
   Package,
-  Play,
   Plus,
   RefreshCw,
   Search,
@@ -134,7 +133,7 @@ const ITEM_STAGES = [
   { id: 'direction', short: 'Brief', title: 'Direção de arte', description: 'Defina a função, o material, a silhueta e o ponto de pivô do item.', icon: FileText, output: 'brief.md' },
   { id: 'references', short: 'Referências', title: 'Prancha de referências', description: 'Frente, perfil e costas com escala, iluminação e materiais consistentes.', icon: Image, output: 'references/*.png' },
   { id: 'model', short: 'Modelo 3D', title: 'Modelo 3D', description: 'Gere um modelo otimizado, mantendo a forma e o ponto de encaixe do item.', icon: Box, output: 'model.glb' },
-  { id: 'motion', short: 'Variações', title: 'Movimento & variações', description: 'Opcional: crie rotação, brilho, recoil ou animações simples para o item.', icon: Activity, output: 'motion/ (opcional)' },
+  { id: 'motion', short: 'Variações', title: 'Movimento & variações', description: 'Opcional: crie rotação, brilho, recoil ou animações simples para o item.', icon: Activity, output: 'motion/ (opcional)', optional: true },
   { id: 'spritesheet', short: 'Spritesheet', title: 'Spritesheet 2D', description: 'Renderize o item com pivô previsível, transparência e metadados por frame.', icon: Layers3, output: 'spritesheet.png + json' },
 ];
 
@@ -149,9 +148,20 @@ const ENTRY_OPTIONS = [
 ];
 
 function entryOptionFor(asset) {
-  return ENTRY_OPTIONS.find((option) => option.id === asset?.entryPointId)
-    || ENTRY_OPTIONS.find((option) => option.startStageIndex === asset?.startStageIndex)
+  const option = ENTRY_OPTIONS.find((candidate) => candidate.id === asset?.entryPointId)
+    || ENTRY_OPTIONS.find((candidate) => candidate.startStageIndex === asset?.startStageIndex)
     || ENTRY_OPTIONS[0];
+  if (asset?.type === 'item' && option.id === 'rigged') {
+    const movementWasSkipped = asset.stageStatus?.[3]?.status === 'skipped';
+    return {
+      ...option,
+      label: movementWasSkipped ? 'Modelo 3D existente · movimento pulado' : 'Movimento / variação existente',
+      detail: movementWasSkipped
+        ? 'A etapa opcional de movimento foi pulada; renderize o spritesheet diretamente a partir do modelo 3D e dos demais insumos disponíveis.'
+        : 'Use o arquivo de movimento ou variação existente para renderizar o spritesheet; essa etapa é opcional para itens.',
+    };
+  }
+  return option;
 }
 
 function compressReferenceImage(file) {
@@ -279,20 +289,25 @@ function stageListFor(type) {
   return type === 'item' ? ITEM_STAGES : CHARACTER_STAGES;
 }
 
-function firstPending(completed = [], startAt = 0) {
+function firstPending(completed = [], startAt = 0, stageStatus = []) {
   const startIndex = Math.max(0, Math.min(completed.length, Number.isInteger(startAt) ? startAt : 0));
-  const offset = completed.slice(startIndex).findIndex((step) => !step);
-  return offset === -1 ? completed.length : startIndex + offset;
+  for (let index = startIndex; index < completed.length; index += 1) {
+    if (!completed[index] && stageStatus[index]?.status !== 'skipped') return index;
+  }
+  return completed.length;
 }
 
 function requiredStageCount(asset) {
   const stages = stageListFor(asset.type);
   const startAt = Math.max(0, Math.min(stages.length - 1, Number.isInteger(asset.startStageIndex) ? asset.startStageIndex : 0));
-  return Math.max(1, stages.length - startAt);
+  const optionalSkipped = stages.reduce((count, stage, index) => (
+    count + (index >= startAt && stage.optional && asset.stageStatus?.[index]?.status === 'skipped' ? 1 : 0)
+  ), 0);
+  return Math.max(1, stages.length - startAt - optionalSkipped);
 }
 
 function statusLabel(asset) {
-  const progress = asset?.completed?.filter(Boolean).length || 0;
+  const progress = asset?.completed?.slice(asset?.startStageIndex || 0).filter(Boolean).length || 0;
   const required = requiredStageCount(asset);
   if (progress >= required) return 'Pronto';
   if (progress === 0 && (asset?.startStageIndex || 0) > 0) {
@@ -382,6 +397,24 @@ function taskSpecFor(asset, agent, outputPath, animations) {
   };
 }
 
+function assetForNextHandoff(asset) {
+  const stages = stageListFor(asset.type);
+  const originalStart = Math.max(0, Math.min(stages.length - 1, Number.isInteger(asset.startStageIndex) ? asset.startStageIndex : 0));
+  const completed = stages.map((_, index) => asset.stageStatus?.[index]?.status === 'completed');
+  const nextStage = Math.min(firstPending(completed, originalStart, asset.stageStatus || []), stages.length - 1);
+  const existingInputs = [...(asset.existingInputs || [])];
+  for (let index = originalStart; index < nextStage; index += 1) {
+    if (asset.stageStatus?.[index]?.status !== 'completed') continue;
+    for (const output of asset.stageStatus[index].outputs || []) {
+      if (!existingInputs.some((input) => input.path === output && input.stageIndex === index)) {
+        existingInputs.push({ path: output, stageIndex: index });
+      }
+    }
+  }
+  const entryPointId = ENTRY_OPTIONS.find((option) => option.startStageIndex === nextStage)?.id || ENTRY_OPTIONS[0].id;
+  return { ...asset, startStageIndex: nextStage, entryPointId, existingInputs };
+}
+
 function App() {
   const [assets, setAssets] = useState(loadAssets);
   const [kind, setKind] = useState('character');
@@ -395,6 +428,7 @@ function App() {
   const [comfyWorkflows, setComfyWorkflows] = useState([]);
   const [managedProcesses, setManagedProcesses] = useState([]);
   const [comfyLoading, setComfyLoading] = useState(false);
+  const [externalToolStatus, setExternalToolStatus] = useState({});
   const [toast, setToast] = useState('');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [assetStoreReady, setAssetStoreReady] = useState(false);
@@ -447,6 +481,15 @@ function App() {
       }
     }
     hydrateWorkspace();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!window.liaForge?.getExternalToolStatus) return undefined;
+    window.liaForge.getExternalToolStatus()
+      .then((status) => { if (!cancelled) setExternalToolStatus(status || {}); })
+      .catch(() => { if (!cancelled) setExternalToolStatus({}); });
     return () => { cancelled = true; };
   }, []);
 
@@ -561,14 +604,14 @@ function App() {
     setKind(nextKind);
     const first = assets.find((asset) => asset.type === nextKind);
     if (first) setSelectedId(first.id);
-    setActiveStage(first ? firstPending(first.completed || [], first.startStageIndex || 0) : 0);
+    setActiveStage(first ? firstPending(first.completed || [], first.startStageIndex || 0, first.stageStatus || []) : 0);
     setPage('studio');
     setSearchTerm('');
   }
 
   function selectAsset(asset) {
     setSelectedId(asset.id);
-    setActiveStage(Math.min(firstPending(asset.completed || [], asset.startStageIndex || 0), stageListFor(asset.type).length - 1));
+    setActiveStage(Math.min(firstPending(asset.completed || [], asset.startStageIndex || 0, asset.stageStatus || []), stageListFor(asset.type).length - 1));
   }
 
   function saveAsset(nextAsset) {
@@ -580,11 +623,11 @@ function App() {
     });
     setKind(nextAsset.type);
     setSelectedId(nextAsset.id);
-    setActiveStage(Math.min(firstPending(nextAsset.completed || [], nextAsset.startStageIndex || 0), stageListFor(nextAsset.type).length - 1));
+    setActiveStage(Math.min(firstPending(nextAsset.completed || [], nextAsset.startStageIndex || 0, nextAsset.stageStatus || []), stageListFor(nextAsset.type).length - 1));
     setPage('studio');
     setModalOpen(false);
     setEditingAsset(null);
-    notify(editingAsset ? 'Brief atualizado neste workspace local.' : 'Asset criado. Agora você pode preparar o handoff para um agente.');
+    notify(editingAsset ? 'Brief atualizado neste workspace local.' : 'Asset criado. Você pode seguir manualmente; handoff para um agente é opcional.');
   }
 
   function addAnimationToSelected(name) {
@@ -595,6 +638,84 @@ function App() {
     notify(`“${name}” foi adicionado à lista de pedidos.`);
   }
 
+  async function completeManualStage(asset, stageIndex) {
+    if (!window.liaForge?.completeAssetStageManually) {
+      notify('O registro manual de arquivos está disponível na janela desktop da Lia Forge.');
+      return;
+    }
+    try {
+      await writeWorkspaceAssets(assets);
+      const result = await window.liaForge.completeAssetStageManually({ assetId: asset.id, stageIndex });
+      if (result.cancelled) return;
+      const updatedAsset = { ...asset, completed: result.completed, stageStatus: result.stageStatus };
+      setAssets((current) => current.map((item) => item.id === asset.id ? updatedAsset : item));
+      setActiveStage(Math.min(firstPending(result.completed, asset.startStageIndex || 0, result.stageStatus), stageListFor(asset.type).length - 1));
+      notify(`${result.stage}: arquivos reais conferidos e registrados.`);
+    } catch (error) {
+      notify(`Não foi possível registrar a etapa: ${error.message || 'erro desconhecido'}`);
+    }
+  }
+
+  async function skipOptionalStage(asset, stageIndex) {
+    if (!window.liaForge?.skipOptionalAssetStage) return;
+    try {
+      await writeWorkspaceAssets(assets);
+      const result = await window.liaForge.skipOptionalAssetStage({ assetId: asset.id, stageIndex });
+      if (result.cancelled) return;
+      const updatedAsset = { ...asset, completed: result.completed, stageStatus: result.stageStatus };
+      setAssets((current) => current.map((item) => item.id === asset.id ? updatedAsset : item));
+      setActiveStage(Math.min(firstPending(result.completed, asset.startStageIndex || 0, result.stageStatus), stageListFor(asset.type).length - 1));
+      notify(`${result.stage} foi pulada como etapa opcional; nenhum arquivo foi inventado.`);
+    } catch (error) {
+      notify(`Não foi possível pular a etapa: ${error.message || 'erro desconhecido'}`);
+    }
+  }
+
+  async function openManualStageFolder(asset, stageIndex) {
+    if (!window.liaForge?.openAssetStageFolder) {
+      notify('Abertura da pasta está disponível na janela desktop da Lia Forge.');
+      return;
+    }
+    try {
+      await writeWorkspaceAssets(assets);
+      await window.liaForge.openAssetStageFolder({ assetId: asset.id, stageIndex });
+    } catch (error) {
+      notify(`Não foi possível abrir a pasta: ${error.message || 'erro desconhecido'}`);
+    }
+  }
+
+  async function openToolInterface(asset, stageIndex, tool) {
+    if (!window.liaForge?.openExternalTool) {
+      notify('A abertura direta de ferramentas está disponível na janela desktop da Lia Forge.');
+      return;
+    }
+    try {
+      await writeWorkspaceAssets(assets);
+      if (tool === 'comfyui') {
+        const result = await window.liaForge.openComfyUiInterface({ assetId: asset.id, stageIndex });
+        notify(`Interface do ComfyUI aberta. Salve seus arquivos em ${result.folder}.`);
+      } else {
+        const result = await window.liaForge.openExternalTool({ assetId: asset.id, stageIndex, tool });
+        notify(`${result.label} aberto na pasta desta etapa. Use a interface do aplicativo e salve seus arquivos nela.`);
+      }
+    } catch (error) {
+      notify(`Não foi possível abrir a ferramenta: ${error.message || 'erro desconhecido'}`);
+    }
+  }
+
+  async function chooseExternalApplication(asset, stageIndex) {
+    if (!window.liaForge?.chooseAndOpenExternalApplication) {
+      notify('A escolha de aplicativos externos está disponível na janela desktop da Lia Forge.');
+      return;
+    }
+    try {
+      await writeWorkspaceAssets(assets);
+      const result = await window.liaForge.chooseAndOpenExternalApplication({ assetId: asset.id, stageIndex });
+      if (!result.cancelled) notify(`${result.label} aberto na pasta desta etapa. Salve os arquivos nela e depois verifique os outputs.`);
+    } catch (error) {
+      notify(`Não foi possível abrir o aplicativo: ${error.message || 'erro desconhecido'}`);
+    }
+  }
 
   function navigate(nextPage) {
     setPage(nextPage);
@@ -623,7 +744,7 @@ function App() {
         onChooseKind={chooseKind}
       />
       <div className="main-shell">
-        <TopBar storageMode={!assetStoreReady ? 'syncing' : assetStoreWriteFailed ? 'error' : assetStoreAvailable ? 'workspace' : 'browser'} onMenu={() => setMobileMenuOpen((value) => !value)} onHelp={() => notify('Lia Forge organiza briefs, registra handoffs e consulta o ComfyUI; workflows e pesos só são executados ou baixados após configuração explícita.')} />
+        <TopBar storageMode={!assetStoreReady ? 'syncing' : assetStoreWriteFailed ? 'error' : assetStoreAvailable ? 'workspace' : 'browser'} onMenu={() => setMobileMenuOpen((value) => !value)} onHelp={() => notify('Agentes são opcionais. Trabalhe manualmente e registre arquivos reais, ou use o handoff para delegar; a Lia Forge não gera assets sozinha.')} />
         {mobileMenuOpen && (
           <div className="mobile-menu-panel">
             <button onClick={() => navigate('studio')}><Grid2X2 size={17} /> Asset studio</button>
@@ -653,6 +774,14 @@ function App() {
             onEdit={openEditModal}
             onHandoff={() => navigate('handoff')}
             onAddAnimation={addAnimationToSelected}
+            onManualComplete={completeManualStage}
+            onSkipOptional={skipOptionalStage}
+            onOpenStageFolder={openManualStageFolder}
+            onOpenTool={openToolInterface}
+            onChooseExternalApplication={chooseExternalApplication}
+            externalToolStatus={externalToolStatus}
+            comfyUiConnected={Boolean(comfyStatus?.connected)}
+            manualModeAvailable={Boolean(window.liaForge?.completeAssetStageManually)}
             onNotify={notify}
           />
         )}
@@ -665,7 +794,7 @@ function App() {
             onNotify={notify}
           />
         )}
-        {page === 'exports' && <ExportsPage assets={assets} onBuildTask={() => navigate('handoff')} onNotify={notify} />}
+        {page === 'exports' && <ExportsPage assets={assets} onBuildTask={() => navigate('handoff')} onOpenAssetFolder={(asset) => openManualStageFolder(asset, 4)} onNotify={notify} />}
         {page === 'activity' && (
           <ActivityPage
             activities={workspaceActivities}
@@ -739,10 +868,10 @@ function Sidebar({ page, kind, characterCount, itemCount, activityCount, onNavig
 
       <div className="sidebar-bottom">
         <div className="connector-card">
-          <div className="connector-card-top"><span className="connector-pulse" /><span>AI CONNECTORS</span><span className="connector-count">0/4</span></div>
-          <strong>Nenhum provider conectado</strong>
-          <p>Prepare uma tarefa para Claude Code, Codex, OpenCode ou outro agente local.</p>
-          <button onClick={() => onNavigate('handoff')}>Configurar handoff <ArrowUpRight size={13} /></button>
+          <div className="connector-card-top"><span className="connector-pulse" /><span>AGENTE · OPCIONAL</span><span className="connector-count">MANUAL</span></div>
+          <strong>Sem agente? Tudo bem.</strong>
+          <p>Crie briefs, use suas próprias ferramentas e registre os arquivos reais. Handoff só é necessário para delegar.</p>
+          <button onClick={() => onNavigate('handoff')}>Ver opções de handoff <ArrowUpRight size={13} /></button>
         </div>
         <button className="user-profile" onClick={() => onNavigate('handoff')}>
           <div className="user-avatar">L</div>
@@ -789,6 +918,14 @@ function StudioPage({
   onEdit,
   onHandoff,
   onAddAnimation,
+  onManualComplete,
+  onSkipOptional,
+  onOpenStageFolder,
+  onOpenTool,
+  onChooseExternalApplication,
+  externalToolStatus,
+  comfyUiConnected,
+  manualModeAvailable,
   onNotify,
 }) {
   const progressTotal = Math.round((completedCount / Math.max(completedStages, 1)) * 100);
@@ -828,14 +965,14 @@ function StudioPage({
         </div>
         <button className="overview-card overview-agent-card" onClick={onHandoff}>
           <div className="overview-icon agent-overview-icon"><Bot size={16} /></div>
-          <div><span>AGENT HANDOFF</span><strong>Prepare uma tarefa <ArrowRight size={14} /></strong></div>
+          <div><span>HANDOFF · OPCIONAL</span><strong>Delegar uma etapa <ArrowRight size={14} /></strong></div>
           <ArrowUpRight className="overview-card-arrow" size={15} />
         </button>
       </div>
 
       <div className="workbench-heading">
         <div className="workbench-heading-left"><div className="workbench-live-dot" /><span>{kind === 'character' ? 'CHARACTER PIPELINE' : 'ITEM PIPELINE'}</span><span className="workbench-separator">/</span><span className="workbench-muted">{visibleAssets.length} assets</span></div>
-        <div className="workbench-heading-right"><span className="preview-only-label"><Circle size={7} /> PRÉVIA LOCAL</span><button className="icon-button compact-icon" aria-label="Configurações" onClick={() => onNotify('Configurações do projeto estarão disponíveis na próxima etapa.')}><Settings2 size={15} /></button></div>
+        <div className="workbench-heading-right"><span className="preview-only-label"><Circle size={7} /> GUIA VISUAL · NÃO É OUTPUT</span><button className="icon-button compact-icon" aria-label="Configurações" onClick={() => onNotify('Configurações do projeto estarão disponíveis na próxima etapa.')}><Settings2 size={15} /></button></div>
       </div>
 
       <div className="workbench-grid">
@@ -861,6 +998,14 @@ function StudioPage({
             stageIndex={activeStage}
             completed={selectedAsset.completed || []}
             onHandoff={onHandoff}
+            onManualComplete={onManualComplete}
+            onSkipOptional={onSkipOptional}
+            onOpenStageFolder={onOpenStageFolder}
+            onOpenTool={onOpenTool}
+            onChooseExternalApplication={onChooseExternalApplication}
+            externalToolStatus={externalToolStatus}
+            comfyUiConnected={comfyUiConnected}
+            manualModeAvailable={manualModeAvailable}
             onNotify={onNotify}
           />
         </div>
@@ -910,43 +1055,50 @@ function inputsForStage(asset, stageIndex) {
 
 function StageNavigator({ stages, completed, activeStage, onSelect, asset }) {
   const startAt = Math.max(0, Math.min(stages.length - 1, Number.isInteger(asset.startStageIndex) ? asset.startStageIndex : 0));
-  const first = firstPending(completed, startAt);
-  const required = Math.max(1, stages.length - startAt);
+  const first = firstPending(completed, startAt, asset.stageStatus || []);
+  const required = requiredStageCount(asset);
   const doneCount = completed.slice(startAt).filter(Boolean).length;
   return (
     <section className="panel stage-navigator-panel">
-      <div className="stage-navigator-head"><div><span className="panel-kicker">FLUXO 3D → 2D</span><strong>{stages.length - startAt} etapas a partir daqui</strong></div><button className="mini-icon-button" aria-label="Ver detalhes do fluxo"><MoreHorizontal size={16} /></button></div>
+      <div className="stage-navigator-head"><div><span className="panel-kicker">FLUXO 3D → 2D</span><strong>{required} etapas a partir daqui</strong></div><button className="mini-icon-button" aria-label="Ver detalhes do fluxo"><MoreHorizontal size={16} /></button></div>
       <div className="stage-steps">
         {stages.map((step, index) => {
           const Icon = step.icon;
           const done = Boolean(completed[index]);
+          const optionalSkipped = asset.stageStatus?.[index]?.status === 'skipped';
           const provided = inputsForStage(asset, index).length > 0 || (index === 1 && Boolean(asset.referenceName || asset.references?.length));
           const skipped = index < startAt;
-          const locked = !skipped && index > first && !done;
+          const locked = !skipped && !optionalSkipped && index > first && !done;
           const active = activeStage === index;
-          const sublabel = done ? 'Output verificado' : provided ? 'Artefato existente' : skipped ? 'Fora deste handoff' : locked ? 'Na fila' : index === startAt ? 'Ponto de entrada' : active ? 'Em foco' : 'Próxima etapa';
+          const sublabel = done ? 'Output verificado' : optionalSkipped ? 'Opcional · pulada' : provided ? 'Artefato existente' : skipped ? 'Fora do ponto de entrada' : locked ? 'Na fila' : index === startAt ? 'Ponto de entrada' : active ? 'Em foco' : 'Próxima etapa';
           return (
-            <button key={step.id || step.short} className={`stage-step ${active ? 'is-active' : ''} ${done ? 'is-done' : ''} ${provided ? 'is-provided' : ''} ${skipped ? 'is-skipped' : ''} ${locked ? 'is-locked' : ''}`} onClick={() => onSelect(index)}>
-              <span className="stage-step-icon">{done ? <Check size={14} /> : <Icon size={15} />}</span>
+            <button key={step.id || step.short} className={`stage-step ${active ? 'is-active' : ''} ${done ? 'is-done' : ''} ${provided ? 'is-provided' : ''} ${skipped || optionalSkipped ? 'is-skipped' : ''} ${locked ? 'is-locked' : ''}`} onClick={() => onSelect(index)}>
+              <span className="stage-step-icon">{done ? <Check size={14} /> : optionalSkipped ? <Circle size={13} /> : <Icon size={15} />}</span>
               <span className="stage-step-copy"><span><b>{String(index + 1).padStart(2, '0')}</b>{step.short}</span><small>{sublabel}</small></span>
               {active && <span className="active-step-indicator" />}
             </button>
           );
         })}
       </div>
-      <div className="stage-navigator-foot"><div className="stage-progress-copy"><span>PROGRESSO DE {asset.type === 'character' ? 'PERSONAGEM' : 'ITEM'}</span><b>{doneCount}<i>/</i>{required}</b></div><div className="stage-progress-bar"><span style={{ width: `${(doneCount / required) * 100}%` }} /></div><span className="stage-navigator-footnote">Somente outputs reais validados contam como concluídos</span></div>
+      <div className="stage-navigator-foot"><div className="stage-progress-copy"><span>PROGRESSO DE {asset.type === 'character' ? 'PERSONAGEM' : 'ITEM'}</span><b>{doneCount}<i>/</i>{required}</b></div><div className="stage-progress-bar"><span style={{ width: `${(doneCount / required) * 100}%` }} /></div><span className="stage-navigator-footnote">Só arquivos reais conferidos contam como concluídos</span></div>
     </section>
   );
 }
 
-function StageWorkspace({ asset, stage, stageIndex, completed, onHandoff, onNotify }) {
+function StageWorkspace({ asset, stage, stageIndex, completed, onHandoff, onManualComplete, onSkipOptional, onOpenStageFolder, onOpenTool, onChooseExternalApplication, externalToolStatus, comfyUiConnected, manualModeAvailable, onNotify }) {
   const startAt = Math.max(0, Math.min(4, Number.isInteger(asset.startStageIndex) ? asset.startStageIndex : 0));
   const isDone = Boolean(completed[stageIndex]);
+  const optionalSkipped = asset.stageStatus?.[stageIndex]?.status === 'skipped';
   const isProvided = inputsForStage(asset, stageIndex).length > 0 || (stageIndex === 1 && Boolean(asset.referenceName || asset.references?.length));
   const isSkipped = stageIndex < startAt;
-  const isLocked = !isSkipped && stageIndex > firstPending(completed, startAt) && !isDone;
+  const first = firstPending(completed, startAt, asset.stageStatus || []);
+  const isLocked = !isSkipped && !optionalSkipped && stageIndex > first && !isDone;
+  const canChangeStage = !isSkipped && !isLocked;
   const providedInputs = inputsForStage(asset, stageIndex);
-  const badge = isDone ? 'Output verificado' : isProvided ? 'Entrada existente' : isSkipped ? 'Ignorada neste handoff' : isLocked ? 'Na fila' : stageIndex === startAt ? 'Ponto de entrada' : 'Pendente';
+  const badge = isDone ? 'Output verificado' : optionalSkipped ? 'Opcional ignorada' : isProvided ? 'Entrada existente' : isSkipped ? 'Fora do ponto de entrada' : isLocked ? 'Na fila' : stageIndex === startAt ? 'Ponto de entrada' : 'Pendente';
+  const primaryTool = stageIndex === 1 ? 'krita' : stageIndex >= 2 ? 'blender' : null;
+  const primaryToolLabel = primaryTool === 'krita' ? 'Krita' : 'Blender';
+  const primaryToolStatus = primaryTool ? externalToolStatus?.[primaryTool] : null;
 
   return (
     <section className="panel stage-workspace-panel">
@@ -956,19 +1108,38 @@ function StageWorkspace({ asset, stage, stageIndex, completed, onHandoff, onNoti
           <h2>{stage.title}</h2>
           <p>{stage.description}</p>
         </div>
-        <div className="stage-workspace-menu"><span className={`stage-result-badge ${isDone ? 'result-ready' : ''}`}><span />{badge}</span><button className="mini-icon-button" onClick={() => onNotify('As etapas anteriores ao ponto de entrada não serão refeitas; o handoff atual apenas prepara instruções.')} aria-label="Mais opções"><MoreHorizontal size={17} /></button></div>
+        <div className="stage-workspace-menu"><span className={`stage-result-badge ${isDone ? 'result-ready' : ''}`}><span />{badge}</span><button className="mini-icon-button" onClick={() => onNotify('O handoff é opcional. Você pode trabalhar manualmente e registrar arquivos reais nesta etapa.')} aria-label="Mais opções"><MoreHorizontal size={17} /></button></div>
       </div>
 
       <StagePreview asset={asset} stageIndex={stageIndex} isDone={isDone} />
 
       {providedInputs.length > 0 && <div className="existing-input-callout"><FolderOpen size={13} /><span><strong>Insumo informado:</strong> {providedInputs.map((input) => input.path).join(' · ')}</span></div>}
+      {manualModeAvailable && stageIndex > 0 && <div className="stage-tool-access">
+        <div className="stage-tool-access-copy"><strong>Abra uma ferramenta e trabalhe na interface dela</strong><small>Sem agente: a Lia Forge abre o aplicativo na pasta desta etapa. Salve os arquivos nela e depois verifique os outputs.</small><small>{!primaryToolStatus ? `Verificando ${primaryToolLabel}…` : primaryToolStatus.installed ? `${primaryToolLabel} detectado.` : `${primaryToolLabel} não detectado; escolha outro aplicativo já instalado.`}</small></div>
+        <div className="stage-tool-access-actions">
+          <button className="button button-quiet" disabled={!primaryToolStatus} onClick={() => (primaryToolStatus?.installed ? onOpenTool(asset, stageIndex, primaryTool) : onChooseExternalApplication(asset, stageIndex))}>
+            <ArrowUpRight size={13} />{!primaryToolStatus ? `Detectando ${primaryToolLabel}…` : primaryToolStatus.installed ? `Abrir ${primaryToolLabel}` : `Escolher editor/aplicativo`}
+          </button>
+          {stageIndex === 4 && externalToolStatus?.krita?.installed && <button className="button button-quiet" onClick={() => onOpenTool(asset, stageIndex, 'krita')}><ArrowUpRight size={13} />Abrir Krita</button>}
+          {comfyUiConnected && <button className="button button-quiet" onClick={() => onOpenTool(asset, stageIndex, 'comfyui')}><ArrowUpRight size={13} />Abrir ComfyUI</button>}
+          <button className="button button-quiet" onClick={() => onChooseExternalApplication(asset, stageIndex)}><Plus size={13} />Outro aplicativo</button>
+        </div>
+      </div>}
       <div className="stage-workspace-footer">
         <div className="stage-output-summary"><div className="output-icon"><FileImage size={15} /></div><div><span>SAÍDA ESPERADA</span><strong>{stage.output}</strong></div><span className="output-format-tag">{stageIndex === 2 ? '3D' : stageIndex === 4 ? '2D' : 'ASSET'}</span></div>
         <div className="stage-action-buttons">
-          <button className="button button-primary stage-run-button" onClick={onHandoff}><Bot size={15} />Preparar handoff<ArrowRight size={13} /></button>
+          <button className="button button-quiet stage-handoff-button" onClick={onHandoff}><Bot size={14} />Handoff <span>opcional</span></button>
+          {manualModeAvailable && <>
+            <button className="button button-quiet stage-folder-button" onClick={() => onOpenStageFolder(asset, stageIndex)} aria-label="Abrir pasta da etapa"><FolderOpen size={14} /> Pasta</button>
+            <button className="button button-primary stage-manual-button" disabled={!canChangeStage} onClick={() => onManualComplete(asset, stageIndex)}>
+              {stageIndex === 0 ? <FileText size={14} /> : <CheckCircle2 size={14} />}
+              {stageIndex === 0 ? (isDone ? 'Reexportar brief' : 'Exportar brief.md') : (isDone ? 'Rever arquivos' : 'Verificar arquivos')}
+            </button>
+            {stage.optional && !isDone && !optionalSkipped && <button className="button button-quiet stage-skip-button" disabled={!canChangeStage} onClick={() => onSkipOptional(asset, stageIndex)}><X size={13} />Pular opcional</button>}
+          </>}
         </div>
       </div>
-      <div className="stage-demo-note"><ShieldCheck size={12} /><span>Esta etapa não é executada aqui. O handoff só cria instruções; conclusão exige arquivos reais verificados.</span></div>
+      <div className="stage-demo-note"><ShieldCheck size={12} /><span>{manualModeAvailable ? 'Sem agente: produza nas suas ferramentas e salve na pasta da etapa. A Lia Forge confere arquivos/formato, não a qualidade visual.' : 'Handoff opcional: crie os arquivos nas suas ferramentas; só outputs reais verificados podem concluir a etapa.'}</span></div>
     </section>
   );
 }
@@ -993,7 +1164,7 @@ function BriefPreview({ asset, isDone }) {
       <div className="brief-preview-side">
         <div className="style-note-card"><span className="preview-label">DIRECTION OF ART</span><h3>{asset.subtitle}</h3><p>{asset.brief}</p><div className="style-token-row"><span>COZY FANTASY</span><span>GAME-READY</span></div></div>
         <div className="palette-card"><div className="palette-card-head"><span>PALETA</span><span>05 TOKENS</span></div><div className="palette-swatches">{paletteKeys.map((key) => <span title={key} key={key} style={{ background: asset.palette?.[key] }} />)}</div><div className="palette-names"><span>Floresta</span><span>Luz viva</span><span>Couro</span></div></div>
-        <div className={`brief-completion-note ${isDone ? 'is-ready' : ''}`}><CheckCircle2 size={14} /><span>{isDone ? 'Brief revisado nesta prévia' : 'Brief aguardando revisão'}</span></div>
+        <div className={`brief-completion-note ${isDone ? 'is-ready' : ''}`}><CheckCircle2 size={14} /><span>{isDone ? 'brief.md exportado e conferido' : 'Brief aguardando revisão e exportação'}</span></div>
       </div>
     </div>
   );
@@ -1001,24 +1172,24 @@ function BriefPreview({ asset, isDone }) {
 
 function ReferencePreview({ asset, isDone }) {
   const views = [
-    { key: 'front', label: 'Frente', code: 'FRT · 00°', file: 'view_front.png' },
-    { key: 'three-quarter', label: '3/4', code: '3Q · 045°', file: 'view_3q.png' },
-    { key: 'side', label: 'Perfil', code: 'SIDE · 090°', file: 'view_side.png' },
-    { key: 'back', label: 'Costas', code: 'BACK · 180°', file: 'view_back.png' },
+    { key: 'front', label: 'Frente', code: 'FRT · 00°' },
+    { key: 'three-quarter', label: '3/4', code: '3Q · 045°' },
+    { key: 'side', label: 'Perfil', code: 'SIDE · 090°' },
+    { key: 'back', label: 'Costas', code: 'BACK · 180°' },
   ];
   return (
     <div className="reference-sheet preview-surface">
-      <div className="reference-canvas-head"><div><span className="canvas-live-dot" /><span>REFERENCE BOARD</span><b>·</b><span>ORTHOGRAPHIC VIEWS</span></div><div className="canvas-head-right"><span className="transparent-indicator"><span /> ALPHA BG</span><span className="canvas-res">2048 × 1024</span></div></div>
+      <div className="reference-canvas-head"><div><span className="canvas-live-dot" /><span>REFERENCE GUIDE</span><b>·</b><span>ORTHOGRAPHIC TARGETS</span></div><div className="canvas-head-right"><span className="transparent-indicator"><span /> BG TARGET</span><span className="canvas-res">ILLUSTRATIVE</span></div></div>
       <div className="reference-view-grid">
         {views.map((view, index) => (
           <div key={view.key} className={`reference-view-card view-${view.key}`}>
             <div className="reference-view-top"><span className="view-number">0{index + 1}</span><span className="view-code">{view.code}</span></div>
             <div className="reference-artwork"><AssetArtwork asset={asset} angle={view.key} /></div>
-            <div className="reference-view-bottom"><span>{view.label}</span><span className={`view-status ${isDone ? 'ready' : ''}`}><Check size={10} /> {isDone ? 'READY' : 'GUIDE'}</span></div>
+            <div className="reference-view-bottom"><span>{view.label}</span><span className="view-status">GUIDE</span></div>
           </div>
         ))}
       </div>
-      <div className="reference-canvas-foot"><div className="canvas-foot-item"><span className="foot-color-mark" /><span>Silhueta</span><b>consistent</b></div><div className="canvas-foot-item"><span className="foot-color-mark foot-color-mark-2" /><span>Escala</span><b>locked</b></div><div className="canvas-foot-item"><span className="foot-color-mark foot-color-mark-3" /><span>Pose</span><b>neutral</b></div><span className="canvas-foot-note">{asset.referenceData && <img src={asset.referenceData} alt="Miniatura da referência" />}{asset.referenceName ? `REF · ${asset.referenceName}` : 'NO SOURCE IMAGE · PROMPT ONLY'}</span></div>
+      <div className="reference-canvas-foot"><div className="canvas-foot-item"><span className="foot-color-mark" /><span>Silhueta</span><b>consistent</b></div><div className="canvas-foot-item"><span className="foot-color-mark foot-color-mark-2" /><span>Escala</span><b>locked</b></div><div className="canvas-foot-item"><span className="foot-color-mark foot-color-mark-3" /><span>Pose</span><b>neutral</b></div><span className="canvas-foot-note">{asset.referenceData && <img src={asset.referenceData} alt="Miniatura da referência" />}{asset.referenceName ? `REF · ${asset.referenceName}` : asset.references?.length ? `REF · ${asset.references.map((reference) => reference.name || reference.path).join(', ')}` : isDone ? 'REFERENCE FILES REGISTERED' : 'GUIDE ONLY · NO FILES REGISTERED'}</span></div>
     </div>
   );
 }
@@ -1026,9 +1197,9 @@ function ReferencePreview({ asset, isDone }) {
 function ModelPreview({ asset, isDone }) {
   return (
     <div className="model-preview preview-surface">
-      <div className="model-view-toolbar"><div><span className="viewfinder-mark">+</span><span>VIEWPORT</span><b>·</b><span>ORTHOGRAPHIC</span></div><div><span className="model-toolbar-pill"><Box size={11} /> {isDone ? 'GLB PREVIEW' : 'MODEL TARGET'}</span><button className="model-fullscreen" aria-label="Expandir visualização"><ArrowUpRight size={14} /></button></div></div>
-      <div className="model-viewport-grid"><div className="model-axis-labels"><span>X</span><span>Y</span><span>Z</span></div><div className="model-stage-grid" /><div className="model-art-large"><AssetArtwork asset={asset} angle="three-quarter" /></div><div className="model-shadow" /><div className="model-coordinates"><span>ORTHO / 35 mm</span><span>0.00, 0.00, 0.00</span></div><div className="model-metric model-metric-a"><span>FORMAT</span><strong>.GLB</strong></div><div className="model-metric model-metric-b"><span>TRIANGLE BUDGET</span><strong>{asset.type === 'character' ? '12.4k' : '2.8k'} <small>tris</small></strong></div></div>
-      <div className="model-preview-foot"><span><span className="tiny-green-dot" /> {isDone ? 'Preview de modelo disponível' : 'Aguardando modelo 3D'}</span><span>SHADED <i>·</i> TEXTURE <i>·</i> GRID</span></div>
+      <div className="model-view-toolbar"><div><span className="viewfinder-mark">+</span><span>MODEL GUIDE</span><b>·</b><span>ORTHOGRAPHIC TARGET</span></div><div><span className="model-toolbar-pill"><Box size={11} /> STATIC ILLUSTRATION</span></div></div>
+      <div className="model-viewport-grid"><div className="model-axis-labels"><span>X</span><span>Y</span><span>Z</span></div><div className="model-stage-grid" /><div className="model-art-large"><AssetArtwork asset={asset} angle="three-quarter" /></div><div className="model-shadow" /><div className="model-coordinates"><span>CAMERA TARGET · ORTHO</span><span>GAME ASSET · 3D</span></div><div className="model-metric model-metric-a"><span>FORMAT TARGET</span><strong>.GLB</strong></div><div className="model-metric model-metric-b"><span>VIEW</span><strong>GUIDE</strong></div></div>
+      <div className="model-preview-foot"><span><span className="tiny-green-dot" /> {isDone ? 'Arquivo(s) 3D registrado(s) · não visualizado(s) aqui' : 'Guia de modelagem · nenhum arquivo carregado'}</span><span>ILLUSTRATION <i>·</i> NOT A MODEL VIEWER</span></div>
     </div>
   );
 }
@@ -1037,14 +1208,14 @@ function RigPreview({ asset, isDone }) {
   const isCharacter = asset.type === 'character';
   return (
     <div className="rig-preview preview-surface">
-      <div className="rig-preview-head"><div><span className="rig-head-dot" />{isCharacter ? 'HUMANOID RIG' : 'PROP MOTION'}</div><span>{isCharacter ? 'MIXAMO / BLENDER READY' : 'OPTIONAL · NO HUMANOID RIG'}</span></div>
+      <div className="rig-preview-head"><div><span className="rig-head-dot" />{isCharacter ? 'RIG TARGET · STATIC GUIDE' : 'PIVOT / MOTION TARGET'}</div><span>{isCharacter ? 'NO ANIMATION PLAYER' : 'OPTIONAL · NO HUMANOID RIG'}</span></div>
       <div className="rig-canvas"><div className="rig-grid" />
         <div className={`rig-art ${!isCharacter ? 'rig-art-item' : ''}`}><AssetArtwork asset={asset} angle="front" /></div>
-        {isCharacter ? <RigSkeleton /> : <div className="pivot-overlay"><span className="pivot-line" /><span className="pivot-dot" /><span className="pivot-label">PIVOT / GRIP</span></div>}
-        <div className="rig-bone-tag">{isDone ? (isCharacter ? 'RIG VERIFIED' : 'MOTION PREVIEW') : (isCharacter ? 'RIG TARGET' : 'PIVOT TARGET')}</div>
-        <div className="rig-scale">1.00 m <span>│</span> UNIT SCALE</div>
+        {isCharacter ? <RigSkeleton /> : <div className="pivot-overlay"><span className="pivot-line" /><span className="pivot-dot" /><span className="pivot-label">PIVOT / GRIP TARGET</span></div>}
+        <div className="rig-bone-tag">{isDone ? 'FILES REGISTERED' : (isCharacter ? 'RIG TARGET' : 'PIVOT TARGET')}</div>
+        <div className="rig-scale">SCALE TARGET <span>│</span> PROJECT UNITS</div>
       </div>
-      <div className="rig-controls"><div className="rig-control-info"><span>ACTIVE CLIP</span><strong>{asset.animations?.[0] || (isCharacter ? 'Idle' : 'Idle glow')}</strong><span className="rig-duration">00:02.4 <i>·</i> 24 FPS</span></div><div className="rig-timeline"><span className="timeline-playhead" /><span className="timeline-key key-1" /><span className="timeline-key key-2" /><span className="timeline-key key-3" /><span className="timeline-key key-4" /></div><button className="rig-play-button" aria-label="Reproduzir clip"><Play size={13} fill="currentColor" /></button></div>
+      <div className="rig-controls"><div className="rig-control-info"><span>REQUESTED CLIP / MOVEMENT</span><strong title={(asset.animations || []).join(', ')}>{asset.animations?.[0] || (isCharacter ? 'Idle' : 'Idle glow')}</strong><span className="rig-duration">{isDone ? 'Files registered · inspect in your 3D tool' : 'Static guide · no animation playback'}</span></div></div>
     </div>
   );
 }
@@ -1064,12 +1235,12 @@ function RigSkeleton() {
 }
 
 function SpritePreview({ asset, isDone }) {
-  const frames = ['IDLE_01', 'IDLE_02', 'WALK_01', 'WALK_02', 'WALK_03', 'WALK_04', 'ATTACK_01', 'ATTACK_02'];
+  const exampleCells = Array.from({ length: 8 }, (_, index) => `GUIDE_${String(index + 1).padStart(2, '0')}`);
   return (
     <div className="sprite-preview preview-surface">
-      <div className="sprite-preview-toolbar"><div><span className="sprite-grid-icon"><Layers3 size={13} /></span><span>SPRITE ATLAS</span><b>·</b><span>{frames.length} FRAMES</span></div><div className="sprite-toolbar-right"><span className="transparent-indicator"><span /> TRANSPARENT</span><span>24 FPS</span></div></div>
-      <div className="sprite-atlas-area"><div className="sprite-atlas-grid">{frames.map((frame, index) => <div key={frame} className={`sprite-cell sprite-cell-${index}`}><div className="sprite-art"><AssetArtwork asset={asset} angle={index % 2 === 0 ? 'front' : 'three-quarter'} /></div><span>{frame}</span></div>)}</div><div className="sprite-atlas-side-label"><span>PACKING</span><strong>2 × 4</strong><i /><span>PADDING</span><strong>2 px</strong><i /><span>ANCHOR</span><strong>{asset.type === 'character' ? 'FEET' : 'PIVOT'}</strong></div></div>
-      <div className="sprite-preview-foot"><span className="sprite-quality"><CheckCircle2 size={13} /> {isDone ? 'Prévia de atlas pronta' : 'Spritesheet aguardando render'}</span><span>2048 × 1024 <i>·</i> PNG + JSON</span></div>
+      <div className="sprite-preview-toolbar"><div><span className="sprite-grid-icon"><Layers3 size={13} /></span><span>ATLAS LAYOUT GUIDE</span><b>·</b><span>{exampleCells.length} EXAMPLE CELLS</span></div><div className="sprite-toolbar-right"><span className="transparent-indicator"><span /> ALPHA TARGET</span><span>EXAMPLE ONLY</span></div></div>
+      <div className="sprite-atlas-area"><div className="sprite-atlas-grid">{exampleCells.map((frame, index) => <div key={frame} className={`sprite-cell sprite-cell-${index}`}><div className="sprite-art"><AssetArtwork asset={asset} angle={index % 2 === 0 ? 'front' : 'three-quarter'} /></div><span>{frame}</span></div>)}</div><div className="sprite-atlas-side-label"><span>LAYOUT</span><strong>EXAMPLE</strong><i /><span>FRAME SIZE</span><strong>TBD</strong><i /><span>ANCHOR TARGET</span><strong>{asset.type === 'character' ? 'FEET' : 'PIVOT'}</strong></div></div>
+      <div className="sprite-preview-foot"><span className="sprite-quality"><FileImage size={13} /> {isDone ? 'PNG + JSON registrados · revisar os arquivos' : 'Guia ilustrativo · spritesheet não produzido'}</span><span>GUIDE ONLY <i>·</i> NOT EXPORTED</span></div>
     </div>
   );
 }
@@ -1105,7 +1276,7 @@ function InspectorPanel({ asset, stage, onEdit, onAddAnimation, onNotify }) {
       <div className="animation-chip-list">{shownAnimations.map((animation, index) => <span className="animation-chip" key={`${animation}-${index}`}><span className="animation-chip-dot" />{animation}</span>)}{asset.animations.length > 5 && <button className="more-animation-chip" onClick={() => setShowAllAnimations((value) => !value)}>{showAllAnimations ? 'menos' : `+${asset.animations.length - 5}`}</button>}</div>
       <div className="inspector-divider" />
       <div className="inspector-specs"><div><span>FRAME TARGET</span><strong>{asset.target || '48 × 48 px'}</strong></div><div><span>CAMERA</span><strong>Ortográfica · fixa</strong></div></div>
-      <button className="output-path-card" onClick={() => onNotify(`Destino planejado: ${directory}. Os arquivos só serão criados quando um agente/provider executar a tarefa.`)}><span className="output-path-icon"><FolderOpen size={14} /></span><span><small>DESTINO PLANEJADO</small><strong>{directory}</strong></span><ArrowUpRight size={13} /></button>
+      <button className="output-path-card" onClick={() => onNotify(`Pasta do asset: ${directory}. Produza manualmente nas suas ferramentas ou use o handoff opcional; registre só arquivos reais verificados.`)}><span className="output-path-icon"><FolderOpen size={14} /></span><span><small>PASTA DE SAÍDA</small><strong>{directory}</strong></span><ArrowUpRight size={13} /></button>
       <div className="inspector-note"><ShieldCheck size={13} /><span>Brief e status salvos neste navegador</span></div>
     </aside>
   );
@@ -1223,8 +1394,9 @@ function HandoffPage({ assets, selectedAsset, onSelectAsset, onGoToStudio, onNot
   const [outputPath, setOutputPath] = useState(selectedAsset.outputPath || `game/assets/${selectedAsset.type === 'character' ? 'characters' : 'items'}/${slugify(selectedAsset.name)}`);
   const [animations, setAnimations] = useState(selectedAsset.animations || []);
   const [copied, setCopied] = useState(false);
-  const prompt = useMemo(() => makeAgentPrompt(selectedAsset, agent, outputPath, animations), [selectedAsset, agent, outputPath, animations]);
-  const spec = useMemo(() => taskSpecFor(selectedAsset, agent, outputPath, animations), [selectedAsset, agent, outputPath, animations]);
+  const handoffAsset = useMemo(() => assetForNextHandoff(selectedAsset), [selectedAsset]);
+  const prompt = useMemo(() => makeAgentPrompt(handoffAsset, agent, outputPath, animations), [handoffAsset, agent, outputPath, animations]);
+  const spec = useMemo(() => taskSpecFor(handoffAsset, agent, outputPath, animations), [handoffAsset, agent, outputPath, animations]);
   const animationOptions = selectedAsset.type === 'character' ? CHAR_ANIMATION_OPTIONS : ITEM_ANIMATION_OPTIONS;
 
   useEffect(() => {
@@ -1266,18 +1438,18 @@ function HandoffPage({ assets, selectedAsset, onSelectAsset, onGoToStudio, onNot
   return (
     <main className="page-content handoff-page">
       <div className="page-heading-row handoff-heading-row">
-        <div><div className="eyebrow"><span>HOLLOW VALE</span><i>/</i><span>ORQUESTRAÇÃO</span></div><h1>Agent handoff</h1><p className="page-subtitle">Prepare uma tarefa para continuar do ponto escolhido, sem refazer artefatos existentes.</p></div>
+        <div><div className="eyebrow"><span>HOLLOW VALE</span><i>/</i><span>ORQUESTRAÇÃO</span></div><h1>Agent handoff</h1><p className="page-subtitle">Handoff opcional para delegar tarefas; o fluxo manual continua disponível no Asset Studio.</p></div>
         <div className="handoff-heading-badge"><span className="handoff-badge-icon"><Bot size={17} /></span><span><strong>Local-first</strong><small>Você controla os agentes e providers</small></span></div>
       </div>
 
-      <div className="handoff-explainer"><div className="explainer-icon"><Workflow size={19} /></div><div><strong>Fluxo retomável, entrada explícita.</strong><p>O handoff informa ao agente onde continuar e quais arquivos existentes validar. Não inicia agentes nem chama APIs de imagem/3D.</p></div><span className="handoff-demo-tag"><span /> HANDOFF ONLY</span></div>
+      <div className="handoff-explainer"><div className="explainer-icon"><Workflow size={19} /></div><div><strong>Delegação opcional, entrada explícita.</strong><p>Escolha um agente apenas se quiser delegar. Sem ele, trabalhe nas suas ferramentas e registre os outputs reais pelo Asset Studio.</p></div><span className="handoff-demo-tag"><span /> HANDOFF ONLY</span></div>
 
       <div className="handoff-layout">
         <section className="panel handoff-config-panel">
           <div className="handoff-panel-heading"><div><span className="panel-kicker">CONFIGURE A TAREFA</span><h2>O que vamos produzir?</h2></div><span className="task-sequence-badge"><span className="tiny-green-dot" /> 01 — 04</span></div>
           <label className="form-field"><span>ASSET DE ORIGEM</span><div className="select-wrap"><select value={selectedAsset.id} onChange={(event) => { const next = assets.find((item) => item.id === event.target.value); if (next) onSelectAsset(next); }} aria-label="Asset de origem">{assets.map((asset) => <option key={asset.id} value={asset.id}>{asset.type === 'character' ? 'Personagem' : 'Item'} · {asset.name}</option>)}</select><ChevronDown size={15} /></div></label>
-          <div className="handoff-entry-card"><span><Workflow size={13} /></span><div><small>PONTO DE ENTRADA · 3D → 2D</small><strong>Etapa {Math.min((selectedAsset.startStageIndex || 0) + 1, 5)} — {stageListFor(selectedAsset.type)[selectedAsset.startStageIndex || 0]?.title || 'Direção de arte'}</strong><small>{entryOptionFor(selectedAsset).detail}</small></div></div>
-          {(selectedAsset.existingInputs || []).length > 0 && <div className="handoff-reference-attachment"><span className="handoff-reference-icon"><FolderOpen size={14} /></span><span><strong>Artefatos existentes</strong><small>{selectedAsset.existingInputs.map((input) => input.path).join(' · ')}</small></span></div>}
+          <div className="handoff-entry-card"><span><Workflow size={13} /></span><div><small>PONTO DE ENTRADA · 3D → 2D</small><strong>Etapa {Math.min((handoffAsset.startStageIndex || 0) + 1, 5)} — {stageListFor(handoffAsset.type)[handoffAsset.startStageIndex || 0]?.title || 'Direção de arte'}</strong><small>{entryOptionFor(handoffAsset).detail}</small></div></div>
+          {(handoffAsset.existingInputs || []).length > 0 && <div className="handoff-reference-attachment"><span className="handoff-reference-icon"><FolderOpen size={14} /></span><span><strong>Artefatos existentes</strong><small>{handoffAsset.existingInputs.map((input) => input.path).join(' · ')}</small></span></div>}
           {(selectedAsset.referenceName || selectedAsset.references?.length) && <div className="handoff-reference-attachment"><span className="handoff-reference-icon"><FileImage size={14} /></span><span><strong>{selectedAsset.referenceName || selectedAsset.references.map((reference) => reference.name || reference.path).join(', ')}</strong><small>{selectedAsset.referenceData ? 'Imagem local pronta para baixar; não é incluída no JSON.' : selectedAsset.references?.length ? `Arquivo(s) no projeto: ${selectedAsset.references.map((reference) => reference.path).join(', ')}` : 'Arquivo indicado no brief; adicione-o ao projeto antes da execução.'}</small></span>{selectedAsset.referenceData && <button onClick={downloadReference}><Download size={12} /> Baixar</button>}</div>}
           <label className="form-field"><span>PASTA DE SAÍDA</span><div className="path-input-wrap"><FolderOpen size={15} /><input value={outputPath} onChange={(event) => setOutputPath(event.target.value)} aria-label="Pasta de saída" /></div><small>Relativa à raiz do projeto de jogo.</small></label>
           <div className="form-field agent-target-field"><span>AGENTE ORQUESTRADOR</span><div className="agent-choice-grid">
@@ -1287,7 +1459,7 @@ function HandoffPage({ assets, selectedAsset, onSelectAsset, onGoToStudio, onNot
             <button className={`agent-choice-wide ${agent === 'agnostic' ? 'is-selected' : ''}`} onClick={() => setAgent('agnostic')}><Terminal size={15} /><span><strong>Prompt genérico</strong><small>para outro agente local</small></span>{agent === 'agnostic' && <CheckCircle2 size={15} />}</button>
           </div></div>
           <div className="form-field animation-request-field"><div className="form-field-title"><span>{selectedAsset.type === 'character' ? 'ANIMAÇÕES A SOLICITAR' : 'MOVIMENTOS / VARIAÇÕES'}</span><small>{animations.length} selecionadas</small></div><div className="handoff-animation-grid">{animationOptions.map((name) => <button key={name} className={`handoff-animation-option ${animations.includes(name) ? 'checked' : ''}`} onClick={() => toggleAnimation(name)}><span>{animations.includes(name) && <Check size={11} />}</span>{name}</button>)}</div></div>
-          <div className="handoff-workflow-mini"><div className="mini-workflow-head"><span>PIPELINE 3D → 2D</span><span>{5 - (selectedAsset.startStageIndex || 0)} etapas neste handoff</span></div><div className="mini-workflow-track">{stageListFor(selectedAsset.type).map((step, index) => { const skipped = index < (selectedAsset.startStageIndex || 0); return <div className={`mini-workflow-step ${skipped ? 'is-skipped' : ''}`} key={step.id || step.short}><span className="mini-workflow-node">{index + 1}</span><span>{step.short}</span>{index < 4 && <i />}</div>; })}</div></div>
+          <div className="handoff-workflow-mini"><div className="mini-workflow-head"><span>PIPELINE 3D → 2D</span><span>{5 - (handoffAsset.startStageIndex || 0)} etapas neste handoff</span></div><div className="mini-workflow-track">{stageListFor(handoffAsset.type).map((step, index) => { const skipped = index < (handoffAsset.startStageIndex || 0); return <div className={`mini-workflow-step ${skipped ? 'is-skipped' : ''}`} key={step.id || step.short}><span className="mini-workflow-node">{index + 1}</span><span>{step.short}</span>{index < 4 && <i />}</div>; })}</div></div>
         </section>
 
         <section className="panel handoff-preview-panel">
@@ -1397,14 +1569,23 @@ function ActivityPage({ activities, managedProcesses, comfyStatus, workflows, lo
   );
 }
 
-function ExportsPage({ assets, onBuildTask, onNotify }) {
-  const completed = assets.filter((asset) => asset.completed?.[4]);
+function ExportsPage({ assets, onBuildTask, onOpenAssetFolder, onNotify }) {
+  const completed = assets.filter((asset) => asset.completed?.[4] && asset.stageStatus?.[4]?.status === 'completed');
   return (
     <main className="page-content exports-page">
-      <div className="page-heading-row"><div><div className="eyebrow"><span>HOLLOW VALE</span><i>/</i><span>SAÍDAS</span></div><h1>Exports</h1><p className="page-subtitle">Organize spritesheets, metadados e pacotes prontos para seu jogo.</p></div><button className="button button-quiet" onClick={onBuildTask}><Bot size={15} /> Criar tarefa de agente</button></div>
-      <div className="export-summary-row"><div><span className="export-summary-icon"><Layers3 size={17} /></span><span><strong>{completed.length}</strong><small>Prévia(s) de etapa final</small></span></div><div><span className="export-summary-icon muted"><FileImage size={17} /></span><span><strong>PNG + JSON</strong><small>Formato de entrega sugerido</small></span></div><div><span className="export-summary-icon muted"><FolderOpen size={17} /></span><span><strong>Local</strong><small>Arquivos no seu projeto, não neste protótipo</small></span></div></div>
-      {completed.length ? <div className="export-cards-grid">{completed.map((asset) => <div className="panel export-card" key={asset.id}><div className="export-art"><AssetArtwork asset={asset} angle="front" /></div><div className="export-card-copy"><span>{asset.type === 'character' ? 'CHARACTER SPRITE' : 'ITEM SPRITE'}</span><h3>{asset.name}</h3><p>Prévia da etapa final marcada como concluída neste navegador. O PNG real ainda não foi renderizado.</p><button onClick={() => onNotify('O protótipo não gera arquivos de imagem reais. Use o handoff para delegar a renderização.')}>Ver detalhes <ArrowUpRight size={12} /></button></div></div>)}</div> : <div className="panel exports-empty"><div className="empty-export-art"><div className="empty-export-grid"><span /><span /><span /><span /><span /><span /><span /><span /><span /></div><div className="empty-export-spark"><Sparkles size={17} /></div></div><span className="panel-kicker">AINDA SEM ARQUIVOS</span><h2>Seu primeiro spritesheet começa com um brief.</h2><p>Quando um agente/provider gerar as imagens finais, os PNGs e metadados ficarão na pasta do seu jogo. Por enquanto, prepare uma tarefa de produção para seu agente local.</p><button className="button button-primary" onClick={onBuildTask}><Bot size={15} /> Preparar tarefa de agente <ArrowRight size={14} /></button><span className="export-empty-note"><ShieldCheck size={13} /> Nenhuma imagem falsa ou arquivo placeholder é exportado.</span></div>}
-      <div className="page-footer"><span><ShieldCheck size={13} /> Esta tela só lista saídas reais registradas no workspace.</span><span>LIA FORGE <b>·</b> EXPORTS</span></div>
+      <div className="page-heading-row"><div><div className="eyebrow"><span>HOLLOW VALE</span><i>/</i><span>SAÍDAS</span></div><h1>Exports</h1><p className="page-subtitle">Arquivos reais registrados no workspace; a Lia Forge não inventa prévias de spritesheets.</p></div><button className="button button-quiet" onClick={onBuildTask}><Bot size={15} /> Handoff opcional</button></div>
+      <div className="export-summary-row"><div><span className="export-summary-icon"><Layers3 size={17} /></span><span><strong>{completed.length}</strong><small>Spritesheets registrados</small></span></div><div><span className="export-summary-icon muted"><FileImage size={17} /></span><span><strong>PNG + JSON</strong><small>Arquivos conferidos no disco</small></span></div><div><span className="export-summary-icon muted"><FolderOpen size={17} /></span><span><strong>Local</strong><small>Outputs dentro da pasta do asset</small></span></div></div>
+      {completed.length ? <div className="export-cards-grid">{completed.map((asset) => {
+        const outputs = asset.stageStatus[4].outputs || [];
+        return <div className="panel export-card" key={asset.id}>
+          <div className="export-art"><div className="export-verified-icon"><FileImage size={24} /><CheckCircle2 size={14} /></div></div>
+          <div className="export-card-copy"><span>ARTEFATOS REAIS · {asset.type === 'character' ? 'PERSONAGEM' : 'ITEM'}</span><h3>{asset.name}</h3><p>{outputs.length} arquivo(s) registrados. A etapa verificou existência, tamanho e formato; confira visualmente os resultados.</p>
+            <ul className="export-file-list">{outputs.map((output) => <li key={output}><FileText size={11} /><code title={output}>{output}</code></li>)}</ul>
+            <button className="button button-quiet" disabled={!window.liaForge?.openAssetStageFolder} onClick={() => onOpenAssetFolder(asset)}><FolderOpen size={12} /> Abrir pasta</button>
+          </div>
+        </div>;
+      })}</div> : <div className="panel exports-empty"><div className="empty-export-art"><div className="empty-export-grid"><span /><span /><span /><span /><span /><span /><span /><span /><span /></div><div className="empty-export-spark"><Sparkles size={17} /></div></div><span className="panel-kicker">AINDA SEM ARQUIVOS</span><h2>Você pode seguir sem agente.</h2><p>Crie e revise o brief, produza nas suas ferramentas (por exemplo, Blender) e registre os arquivos reais na etapa correspondente. O handoff é só uma alternativa para delegar.</p><button className="button button-primary" onClick={() => onNotify('No Asset Studio, abra a etapa e use “Abrir pasta” e “Verificar arquivos”.')}><FolderOpen size={14} /> Ver fluxo manual</button><button className="exports-handoff-link" onClick={onBuildTask}><Bot size={13} /> Ou preparar um handoff opcional <ArrowRight size={13} /></button><span className="export-empty-note"><ShieldCheck size={13} /> Nenhuma geração simulada: só aparecem outputs reais registrados.</span></div>}
+      <div className="page-footer"><span><ShieldCheck size={13} /> A Lia Forge confere arquivos; revisão visual continua com você.</span><span>LIA FORGE <b>·</b> EXPORTS</span></div>
     </main>
   );
 }
@@ -1424,7 +1605,14 @@ function NewAssetModal({ initialAsset, defaultType, storageAvailable, onClose, o
   const [existingInputPaths, setExistingInputPaths] = useState((initialAsset?.existingInputs || []).map((input) => input.path).join('\n'));
   const fileInput = useRef(null);
   const animationOptions = type === 'character' ? CHAR_ANIMATION_OPTIONS : ITEM_ANIMATION_OPTIONS;
-  const entryOption = ENTRY_OPTIONS.find((option) => option.id === entryPointId) || ENTRY_OPTIONS[0];
+  const entryOptions = type === 'item'
+    ? ENTRY_OPTIONS.map((option) => option.id === 'rigged'
+      ? (initialAsset?.stageStatus?.[3]?.status === 'skipped'
+        ? { ...option, label: 'Modelo 3D existente · movimento pulado', detail: 'A etapa opcional de movimento foi pulada; renderize o spritesheet diretamente a partir do modelo 3D e dos demais insumos disponíveis.' }
+        : { ...option, label: 'Movimento / variação existente', detail: 'Use o arquivo de movimento ou variação existente para renderizar o spritesheet; essa etapa é opcional para itens.' })
+      : option)
+    : ENTRY_OPTIONS;
+  const entryOption = entryOptions.find((option) => option.id === entryPointId) || entryOptions[0];
   const existingPaths = existingInputPaths.split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
   const hasImageReference = Boolean(reference || referenceData || initialAsset?.referenceData);
   const canSubmitEntry = entryOption.id === 'concept'
@@ -1495,11 +1683,11 @@ function NewAssetModal({ initialAsset, defaultType, storageAvailable, onClose, o
   return (
     <div className="modal-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <section className="new-asset-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-        <div className="modal-heading"><div><span className="panel-kicker">{initialAsset ? 'EDITAR ASSET' : 'NOVO ASSET'}</span><h2 id="modal-title">{initialAsset ? 'Ajuste o briefing' : 'Comece com uma ideia'}</h2><p>O brief orienta cada etapa e qualquer agente que você conectar depois.</p></div><button className="modal-close" aria-label="Fechar" onClick={onClose}><X size={18} /></button></div>
+        <div className="modal-heading"><div><span className="panel-kicker">{initialAsset ? 'EDITAR ASSET' : 'NOVO ASSET'}</span><h2 id="modal-title">{initialAsset ? 'Ajuste o briefing' : 'Comece com uma ideia'}</h2><p>Use o brief no seu fluxo manual ou opcionalmente entregue-o a um agente depois.</p></div><button className="modal-close" aria-label="Fechar" onClick={onClose}><X size={18} /></button></div>
         <form onSubmit={submit}>
           <div className="modal-type-tabs"><button type="button" onClick={() => { if (type !== 'character') setAnimations([]); setType('character'); }} className={type === 'character' ? 'selected' : ''}><Sparkles size={15} /><span>Personagem</span><small>3D + rig + animações</small></button><button type="button" onClick={() => { if (type !== 'item') setAnimations([]); setType('item'); }} className={type === 'item' ? 'selected' : ''}><Package size={15} /><span>Item / prop</span><small>3D + pivô + variações</small></button></div>
-          <label className="form-field workflow-entry-field"><span>PONTO DE ENTRADA DO FLUXO</span><div className="select-wrap"><select value={entryPointId} onChange={(event) => { setEntryPointId(event.target.value); setExistingInputPaths(''); }} aria-label="Ponto de entrada do fluxo">{ENTRY_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select><ChevronDown size={15} /></div><small>{entryOption.detail}</small></label>
-          {entryOption.sourceStageIndex !== null && <label className="form-field existing-input-field"><span>ARTEFATOS EXISTENTES <small>{entryOption.requiresPath ? 'OBRIGATÓRIO' : 'OPCIONAL SE HOUVER IMAGEM DE REFERÊNCIA'}</small></span><textarea value={existingInputPaths} onChange={(event) => setExistingInputPaths(event.target.value)} placeholder={entryOption.id === 'model' ? 'game/assets/characters/mira/3d/model.glb' : entryOption.id === 'rigged' ? 'game/assets/characters/mira/rig/character.fbx\ngame/assets/characters/mira/animations/idle.fbx' : 'game/assets/characters/mira/concept/poses.png'} rows={2} /><small>Um caminho relativo à raiz do projeto por linha. Os arquivos não são copiados; o agente/MCP deve verificar que existem antes de usá-los.</small></label>}
+          <label className="form-field workflow-entry-field"><span>PONTO DE ENTRADA DO FLUXO</span><div className="select-wrap"><select value={entryPointId} onChange={(event) => { setEntryPointId(event.target.value); setExistingInputPaths(''); }} aria-label="Ponto de entrada do fluxo">{entryOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select><ChevronDown size={15} /></div><small>{entryOption.detail}</small></label>
+          {entryOption.sourceStageIndex !== null && <label className="form-field existing-input-field"><span>ARTEFATOS EXISTENTES <small>{entryOption.requiresPath ? 'OBRIGATÓRIO' : 'OPCIONAL SE HOUVER IMAGEM DE REFERÊNCIA'}</small></span><textarea value={existingInputPaths} onChange={(event) => setExistingInputPaths(event.target.value)} placeholder={entryOption.id === 'model' ? 'game/assets/characters/mira/3d/model.glb' : entryOption.id === 'rigged' ? 'game/assets/characters/mira/rig/character.fbx\ngame/assets/characters/mira/animations/idle.fbx' : 'game/assets/characters/mira/concept/poses.png'} rows={2} /><small>Um caminho relativo à raiz do projeto por linha. Os arquivos não são copiados; a Lia Forge confere que existem no projeto antes de registrar o avanço manual ou via MCP.</small></label>}
           <div className="modal-form-grid"><label className="form-field modal-name-field"><span>NOME DO ASSET *</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder={type === 'character' ? 'Ex.: Guardião do bosque' : 'Ex.: Lanterna de maré'} autoFocus /></label>{type === 'item' && <label className="form-field"><span>TIPO DE ITEM</span><div className="select-wrap"><select value={itemKind} onChange={(event) => setItemKind(event.target.value)}><option value="weapon">Arma</option><option value="tool">Ferramenta</option><option value="prop">Prop / cenário</option><option value="consumable">Consumível</option></select><ChevronDown size={15} /></div></label>}</div>
           <label className="form-field modal-description-field"><span>BRIEF VISUAL</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Descreva o personagem ou item: silhueta, materiais, cores, personalidade e como aparece no jogo..." rows={4} /><small>Inclua o que precisa permanecer consistente entre vistas e animações.</small></label>
           <div className="modal-lower-grid"><div className="form-field"><span>IMAGEM DE REFERÊNCIA <small>OPCIONAL</small></span><button type="button" disabled={referenceProcessing} className={`reference-upload ${dragOver ? 'drag-over' : ''} ${referencePreview ? 'has-file' : ''}`} onClick={() => fileInput.current?.click()} onDragOver={(event) => { event.preventDefault(); setDragOver(true); }} onDragLeave={() => setDragOver(false)} onDrop={(event) => { event.preventDefault(); setDragOver(false); handleFile(event.dataTransfer.files[0]); }}>

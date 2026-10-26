@@ -136,6 +136,20 @@ try {
   }));
   assert.equal(completedViews.status, 'completed');
 
+  const resumedPrepared = parseResult(await client.callTool({
+    name: 'spriteforge_prepare_task',
+    arguments: { assetId: asset.id, agent: 'codex' },
+  }));
+  const resumedTask = JSON.parse(await fs.readFile(path.join(temporaryRoot, resumedPrepared.task), 'utf8'));
+  assert.equal(resumedTask.asset.startStageIndex, 2, 'handoff resumes at the first stage without verified outputs');
+  assert.deepEqual(resumedTask.asset.existingInputs.map((input) => input.path), [
+    `${asset.outputPath}/brief.md`,
+    reference.reference,
+  ]);
+  assert.deepEqual(resumedTask.workflow.map((stage) => stage.execution), ['skip', 'skip', 'run', 'run', 'run']);
+  assert.equal(resumedPrepared.brief, null, 'resuming after completed brief does not recreate it');
+  assert.match(await fs.readFile(path.join(temporaryRoot, resumedPrepared.prompt), 'utf8'), /Comece na etapa 3 \(Modelo 3D\)/);
+
   const attemptedTraversal = await client.callTool({
     name: 'spriteforge_create_asset',
     arguments: {
@@ -208,6 +222,35 @@ try {
     arguments: { assetId: missingInputAsset.asset.id, agent: 'agnostic' },
   });
   assert.equal(missingInputTask.isError, true, 'handoff refuses a supplied artifact path that does not exist');
+
+  const itemModelPath = 'incoming/existing-item-model.glb';
+  await fs.writeFile(path.join(temporaryRoot, itemModelPath), Buffer.from('existing item model'));
+  const optionalMovementAsset = parseResult(await client.callTool({
+    name: 'spriteforge_create_asset',
+    arguments: {
+      name: 'Arma sem movimento',
+      type: 'item',
+      itemKind: 'weapon',
+      brief: 'Arma pronta com modelo existente.',
+      visualPrompt: 'Preservar forma e ponto de encaixe do modelo fornecido.',
+      entryPointId: 'model',
+      startStageIndex: 3,
+      existingInputs: [{ path: itemModelPath, stageIndex: 2 }],
+    },
+  }));
+  const manualStorePath = path.join(temporaryRoot, '.spriteforge', 'assets.json');
+  const manualStore = JSON.parse(await fs.readFile(manualStorePath, 'utf8'));
+  const manualItemRecord = manualStore.assets.find((candidate) => candidate.id === optionalMovementAsset.asset.id);
+  manualItemRecord.stageStatus[3] = { status: 'skipped', outputs: [], note: 'Movimento opcional pulado manualmente.' };
+  await fs.writeFile(manualStorePath, `${JSON.stringify(manualStore, null, 2)}\n`);
+  const afterOptionalSkip = parseResult(await client.callTool({
+    name: 'spriteforge_prepare_task',
+    arguments: { assetId: optionalMovementAsset.asset.id, agent: 'agnostic' },
+  }));
+  const afterOptionalSkipTask = JSON.parse(await fs.readFile(path.join(temporaryRoot, afterOptionalSkip.task), 'utf8'));
+  assert.equal(afterOptionalSkipTask.asset.startStageIndex, 4, 'manual skip advances past optional item movement');
+  assert.equal(afterOptionalSkipTask.asset.existingInputs[0].path, itemModelPath);
+  assert.deepEqual(afterOptionalSkipTask.workflow.map((stage) => stage.execution), ['skip', 'skip', 'skip', 'skip', 'run']);
 
   const finalStore = JSON.parse(await fs.readFile(path.join(temporaryRoot, '.spriteforge', 'assets.json'), 'utf8'));
   const storedOriginal = finalStore.assets.find((candidate) => candidate.id === asset.id);
