@@ -11,8 +11,10 @@ from scripts.spriteforge_launcher import (
     model_slug,
     model_target_path,
     node_version_meets_minimum,
+    normalized_command,
     package_dependencies_ready,
     sha256_file,
+    tool_status,
 )
 
 
@@ -57,6 +59,25 @@ class BootstrapHelpersTest(unittest.TestCase):
             status = comfyui_server_status()
         self.assertFalse(status["running"])
         self.assertEqual(status["endpoint"], "http://127.0.0.1:1")
+
+    def test_windows_batch_command_quotes_program_files_path_for_cmd(self):
+        with patch("scripts.spriteforge_launcher.os.name", "nt"), patch("scripts.spriteforge_launcher.Path") as path_type, patch.dict(
+            "os.environ", {"COMSPEC": r"C:\Windows\System32\cmd.exe"}
+        ):
+            path_type.return_value.suffix = ".CMD"
+            command = normalized_command([r"C:\Program Files\nodejs\npm.CMD", "ci"])
+        self.assertEqual(
+            command,
+            r'"C:\Windows\System32\cmd.exe" /d /s /c ""C:\Program Files\nodejs\npm.CMD" ci"',
+        )
+
+    def test_failed_npm_probe_is_not_reported_as_installed(self):
+        with patch("scripts.spriteforge_launcher.find_executable", return_value=r"C:\Program Files\nodejs\npm.CMD"), patch(
+            "scripts.spriteforge_launcher.read_version", return_value=("npm command failed", None)
+        ):
+            status = tool_status("npm")
+        self.assertFalse(status["installed"])
+        self.assertEqual(status["path"], r"C:\Program Files\nodejs\npm.CMD")
 
     def test_windows_doctor_without_python_exits_before_install_logic(self):
         launcher = (Path(__file__).resolve().parents[1] / "spriteforge.cmd").read_text(encoding="utf-8")

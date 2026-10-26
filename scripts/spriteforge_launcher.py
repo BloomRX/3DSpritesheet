@@ -103,10 +103,14 @@ def save_config(config: dict[str, Any]) -> None:
     CONFIG_PATH.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def normalized_command(command: list[str]) -> list[str]:
-    """Allow npm.cmd and other batch entry points to run on Windows."""
+def normalized_command(command: list[str]) -> list[str] | str:
+    """Run Windows batch entry points through cmd.exe with one correctly quoted command line."""
     if os.name == "nt" and command and Path(command[0]).suffix.lower() in {".cmd", ".bat"}:
-        return [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", subprocess.list2cmdline(command)]
+        comspec = os.environ.get("COMSPEC", "cmd.exe")
+        batch_command = subprocess.list2cmdline(command)
+        # /s strips the first and last quote after /c. The extra pair keeps
+        # a quoted executable path intact when its installation directory has spaces.
+        return f'"{comspec}" /d /s /c "{batch_command}"'
     return command
 
 
@@ -195,6 +199,8 @@ def read_version(executable: str, args: list[str], pattern: str) -> tuple[str, i
     try:
         result = run_command([executable, *args], capture=True)
         text = (result.stdout or "").strip().splitlines()[0] if result.stdout else ""
+        if result.returncode != 0:
+            return text or "comando falhou", None
         match = re.search(pattern, text)
         return text or "versão desconhecida", int(match.group(1)) if match else None
     except (OSError, IndexError):
@@ -219,6 +225,9 @@ def tool_status(name: str) -> dict[str, Any]:
         version, major = "installed", None
     else:
         version, major = "installed", None
+    versioned_tools = {"node", "npm", "blender", "krita", "opencode", "ollama", "comfy"}
+    if name in versioned_tools and major is None:
+        return {"name": name, "installed": False, "path": executable, "version": version, "major": None}
     return {"name": name, "installed": True, "path": executable, "version": version, "major": major}
 
 
