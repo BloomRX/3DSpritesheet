@@ -2,11 +2,11 @@
 
 ## Estado e limites
 
-A Lia Forge agora consegue **consultar** uma instância ComfyUI local: conexão, fila, dispositivos reportados pelo ComfyUI e nomes de checkpoints/LoRAs/VAEs/ControlNet instalados. O painel e o MCP não instalam ComfyUI, não enviam prompts para a fila e não baixam pesos. A configuração de modelos do pack continua vazia (`models: []`); não há modelo escolhido nem download automático.
+A Lia Forge consulta uma instância ComfyUI configurada (conexão, fila, dispositivos reportados e nomes de checkpoints/LoRAs/VAEs/ControlNet). Além disso, na etapa **Referências** do Asset Studio, a pessoa pode iniciar explicitamente um dos dois workflows de conceito, escolher um checkpoint já listado como instalado e acompanhar a geração. O prompt usa o brief e a descrição do asset; o PNG retornado é salvo dentro da pasta do asset, verificado por assinatura, estrutura de chunks, CRCs, IHDR, dados IDAT e encerramento IEND, e registrado como output real da etapa. A configuração de modelos do pack continua vazia (`models: []`): não há seleção padrão nem download automático.
 
-A consulta usa a API HTTP local do ComfyUI. Por padrão, procura `http://127.0.0.1:8188`; para uma instância em outra URL, configure `COMFYUI_URL`. O endereço configurado precisa ser HTTP(S). As rotas de leitura usadas são `/system_stats`, `/queue` e `/models/{checkpoints,loras,vae,controlnet}`. O diagnóstico só informa dispositivos que o próprio ComfyUI reporta — não presume GPU, VRAM ou backend.
+A consulta usa `http://127.0.0.1:8188` por padrão; para outra URL HTTP(S), configure `COMFYUI_URL`. As rotas de leitura são `/system_stats`, `/queue` e `/models/{checkpoints,loras,vae,controlnet}`. A geração usa `/models/checkpoints` para confirmar a escolha, `/prompt` para enviar após o clique, `/history/{prompt_id}` para acompanhar e `/view` para recolher o PNG. O diagnóstico só informa dispositivos que o próprio ComfyUI reporta — não presume GPU, VRAM ou backend. Se `COMFYUI_URL` apontar para um servidor remoto, o prompt será enviado a esse endpoint; revise a configuração antes de gerar.
 
-A tela **Atividade & ComfyUI** diferencia tarefas em execução, fila externa, status do servidor e workflows de exemplo. Fechar a Lia Forge não interrompe trabalhos de uma instância ComfyUI que ela não iniciou; a confirmação de fechamento os identifica como externos.
+O botão de geração não instala ComfyUI, não baixa ou aceita pesos e não altera arquivos de modelos. Se o usuário cancelar ou fechar a Lia Forge após o envio, um job já aceito pode continuar na fila do ComfyUI; a Lia Forge não encerra uma instância externa. O painel **Atividade & ComfyUI** continua sendo de consulta para status/fila.
 
 ## Comfy MCP oficial para agentes
 
@@ -53,7 +53,7 @@ Os dois exemplos estão em `workflows/comfyui/` e também aparecem na tela **Ati
 
 São grafos API simples (`CheckpointLoaderSimple → CLIPTextEncode → KSampler → VAEDecode → SaveImage`), sem pesos. O formato API é próprio para envio ao servidor e não contém o layout visual completo do canvas. No ComfyUI, workflows de canvas podem ser exportados por **File → Export Workflow (API)**.
 
-Esses prompts de conceito são apenas um primeiro rascunho: modelos de imagem podem variar identidade, pose, proporções e vistas. Eles não substituem validação de uma folha ortográfica nem produzem GLB/FBX, rig, animações ou spritesheet. A Lia Forge não marca essas etapas como concluídas porque uma imagem foi gerada.
+Os prompts de conceito são apenas um primeiro rascunho: modelos de imagem podem variar identidade, pose, proporções e vistas. Depois de receber e validar o PNG, a Lia Forge conclui somente a etapa de referência visual; a revisão de qualidade/consistência continua com a pessoa. Uma imagem não conclui modelo 3D, rig, animações ou spritesheet. O workflow atual é text-to-image: referências de imagem existentes não são enviadas nem usadas como condicionamento.
 
 ## Detecção de hardware e escolha do backend
 

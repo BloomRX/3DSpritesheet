@@ -15,6 +15,14 @@ O fluxo distingue estes estados:
 
 Não mostrar uma barra de progresso fictícia, simular geração ou promover uma prévia ilustrativa a output final.
 
+## Visão-alvo: configurar, executar e receber o resultado
+
+Este é o objetivo do produto, ainda não a capacidade end-to-end da versão atual. Já existem fatias explícitas para gerar um PNG de conceito no ComfyUI usando checkpoint instalado escolhido pelo usuário e renderizar spritesheet + metadados no Blender a partir de um modelo existente. A pessoa configura o asset e inicia cada adapter; a cadeia completa — gerar modelo 3D, rig/animações e seguir até 2D sem condução entre etapas — continua pendente. A visão permanece: iniciar explicitamente o trabalho e então deixar a Lia Forge orquestrar ferramentas, validar saídas reais e entregar arquivos, sem exigir agente externo.
+
+A execução automática começa somente depois do comando explícito da pessoa. Detectar ferramentas não significa instalá-las: instalações de apps/runtimes, drivers e downloads/aceite de modelos ou pesos exigem autorização e escolhas informadas. A Lia Forge não presume GPU, modelo ou licença. Se faltar uma dependência, uma escolha ou uma validação, deve pausar naquela decisão, explicar o bloqueio e permitir continuar, trocar a rota ou cancelar — nunca inventar outputs nem marcar uma etapa como concluída sem verificá-los.
+
+Para chegar a esse objetivo, cada etapa precisa de um adapter executável (por exemplo, geração de conceitos via ComfyUI, construção/rig/render via Blender, composição 2D via ferramenta adequada), contratos de entrada/saída e uma fila de tarefas com progresso, logs, cancelamento e retomada. A interface atual de abrir aplicativos e registrar outputs é um fallback/manual, não o produto final pretendido.
+
 ## Agente é opcional: fluxo manual
 
 A pessoa pode usar o Asset Studio sem conectar Claude Code, Codex, OpenCode ou qualquer outro agente. No desktop, cada etapa pode abrir uma ferramenta instalada diretamente da interface da Lia Forge (Blender detectado, ComfyUI local se estiver ativo ou um aplicativo escolhido pelo usuário), usando a pasta da etapa como diretório de trabalho. O usuário cria os arquivos na interface do próprio aplicativo e depois os registra na Lia Forge:
@@ -25,7 +33,9 @@ A pessoa pode usar o Asset Studio sem conectar Claude Code, Codex, OpenCode ou q
 - Rig/animação ou movimento: registra arquivos compatíveis; a etapa de movimento de item pode ser pulada explicitamente por ser opcional.
 - Spritesheet: exige PNG e JSON de metadados.
 
-O registro manual só aceita arquivos existentes, não vazios, dentro da pasta do asset e com extensões esperadas. Isso confirma presença/formato básico, não a qualidade visual, dimensões, alpha, integridade do rig ou correção dos metadados; a revisão continua sendo do usuário. A Lia Forge não instala as ferramentas: se um aplicativo não for detectado, o usuário pode escolher um executável já instalado. Handoff/MCP ficam disponíveis como alternativa de delegação, nunca como pré-requisito para criar briefs ou avançar o fluxo manual.
+O registro manual só aceita arquivos existentes, não vazios, dentro da pasta do asset e com extensões esperadas. Isso confirma presença/formato básico, não a qualidade visual, dimensões, alpha, integridade do rig ou correção dos metadados; a revisão continua sendo do usuário. A Lia Forge não instala as ferramentas: se um aplicativo não for detectado, o usuário pode escolher um executável já instalado. Handoff/MCP ficam disponíveis como alternativa de delegação, nunca como pré-requisito.
+
+Duas ações automáticas adicionais estão disponíveis no desktop: em **Referências**, selecionar um checkpoint já instalado e gerar uma imagem de conceito pelo ComfyUI (sem baixar pesos); em **Spritesheet**, renderizar no Blender a partir de um modelo 3D existente dentro do workspace. O ComfyUI salva um PNG de referência após validar chunks, CRCs e cabeçalho/dados/encerramento. O Blender exige PNG RGBA íntegro e confere dimensões, grade, retângulos, nomes, pivôs e durações no JSON. Ambas exigem ação explícita; progresso bloqueado/falha não conclui a etapa. Essas validações estruturais não confirmam a qualidade visual.
 
 ## Rota inicial disponível: 3D → 2D
 
@@ -43,7 +53,7 @@ Pontos de entrada planejados/disponíveis na tarefa v2:
 - Brief já definido → começar nas referências.
 - Conceito, vistas ou poses 2D existentes → começar no modelo 3D.
 - Modelo 3D existente → começar em rig/animação.
-- Modelo rigado e animações existentes → começar no render do spritesheet.
+- Modelo rigado e animações existentes → começar no render do spritesheet; o botão Blender já renderiza a partir de modelo 3D registrado, desde que o asset tenha animações informadas e o arquivo contenha ações compatíveis.
 
 O handoff recebe caminhos de artefatos relativos à raiz do projeto. A tarefa manda verificar cada arquivo e parar se estiver ausente, ilegível ou incompatível. Esses arquivos não são copiados nem alterados automaticamente. Imagem anexada pelo browser pode exigir download explícito para o workspace antes de um agente externo acessá-la.
 
@@ -82,4 +92,4 @@ A origem poderá ser prompt/referência, 3D, código ou materiais existentes. A 
 
 ## Estado atual da implementação
 
-A UI prepara handoff 3D → 2D opcional para personagem/item, registra um ponto de entrada e inclui caminhos de artefatos existentes no contrato v2. O MCP valida esses caminhos antes de preparar a tarefa; se houver etapas já concluídas no manifesto, continua da primeira pendente e inclui os outputs registrados como insumos, sem refazer o trabalho existente. No desktop, há também fluxo manual: exportar brief, abrir pasta da etapa, registrar outputs e pular a etapa opcional de movimento de item. Em ambos os modos, a Lia Forge não gera imagens, modelos, rigs ou spritesheets por conta própria.
+A UI e o MCP mantêm handoff opcional para personagem/item, ponto de entrada e artefatos existentes. No desktop, além do registro manual, o ComfyUI pode gerar um PNG de referência após checkpoint instalado ser escolhido e o Blender pode renderizar spritesheet + JSON de um modelo 3D registrado; as execuções têm estados/progresso persistidos e validação estrutural dos outputs. Não há geração prompt → 3D, rigging, criação de animações nem orquestração automática de todas as etapas. Code → 2D, Manequim → 2D e ambientes continuam planejados.

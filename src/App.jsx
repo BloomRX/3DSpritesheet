@@ -429,6 +429,7 @@ function App() {
   const [managedProcesses, setManagedProcesses] = useState([]);
   const [comfyLoading, setComfyLoading] = useState(false);
   const [externalToolStatus, setExternalToolStatus] = useState({});
+  const [workflowRun, setWorkflowRun] = useState(null);
   const [toast, setToast] = useState('');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [assetStoreReady, setAssetStoreReady] = useState(false);
@@ -491,6 +492,13 @@ function App() {
       .then((status) => { if (!cancelled) setExternalToolStatus(status || {}); })
       .catch(() => { if (!cancelled) setExternalToolStatus({}); });
     return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!window.liaForge?.onWorkflowEvent) return undefined;
+    return window.liaForge.onWorkflowEvent((event) => {
+      if (event?.run) setWorkflowRun(event.run);
+    });
   }, []);
 
   useEffect(() => {
@@ -717,6 +725,50 @@ function App() {
     }
   }
 
+  async function generateSpritesheetAutomatically(asset) {
+    if (!window.liaForge?.renderSpritesheetFromExistingModel) {
+      notify('A execução automática do Blender está disponível na janela desktop da Lia Forge.');
+      return;
+    }
+    if (workflowRun?.status === 'running') {
+      notify('Já existe uma execução em andamento. Aguarde a etapa terminar antes de iniciar outra.');
+      return;
+    }
+    try {
+      await writeWorkspaceAssets(assets);
+      const result = await window.liaForge.renderSpritesheetFromExistingModel({ assetId: asset.id });
+      const updatedAsset = { ...asset, completed: result.completed, stageStatus: result.stageStatus };
+      setAssets((current) => current.map((item) => item.id === asset.id ? updatedAsset : item));
+      setWorkflowRun(result.run || null);
+      notify('Spritesheet e metadados reais foram renderizados pelo Blender. Confira a prévia e os arquivos exportados.');
+    } catch (error) {
+      if (error.run) setWorkflowRun(error.run);
+      notify(`A renderização automática foi bloqueada ou falhou: ${error.message || 'erro desconhecido'}`);
+    }
+  }
+
+  async function generateConceptAutomatically(asset, checkpoint) {
+    if (!window.liaForge?.generateComfyUiConcept) {
+      notify('A geração de conceito pelo ComfyUI está disponível na janela desktop da Lia Forge.');
+      return;
+    }
+    if (workflowRun?.status === 'running') {
+      notify('Já existe uma execução em andamento. Aguarde a etapa terminar antes de iniciar outra.');
+      return;
+    }
+    try {
+      await writeWorkspaceAssets(assets);
+      const result = await window.liaForge.generateComfyUiConcept({ assetId: asset.id, checkpoint });
+      const updatedAsset = { ...asset, completed: result.completed, stageStatus: result.stageStatus };
+      setAssets((current) => current.map((item) => item.id === asset.id ? updatedAsset : item));
+      setWorkflowRun(result.run || null);
+      notify(`ComfyUI salvou e validou ${result.generatedOutputs?.length || 1} concept PNG(s). Revise a imagem; ela ainda não é um modelo 3D.`);
+    } catch (error) {
+      if (error.run) setWorkflowRun(error.run);
+      notify(`A geração de conceito foi bloqueada ou falhou: ${error.message || 'erro desconhecido'}`);
+    }
+  }
+
   function navigate(nextPage) {
     setPage(nextPage);
     setMobileMenuOpen(false);
@@ -779,8 +831,12 @@ function App() {
             onOpenStageFolder={openManualStageFolder}
             onOpenTool={openToolInterface}
             onChooseExternalApplication={chooseExternalApplication}
+            onGenerateSpritesheet={generateSpritesheetAutomatically}
+            onGenerateConcept={generateConceptAutomatically}
+            workflowRun={workflowRun}
             externalToolStatus={externalToolStatus}
             comfyUiConnected={Boolean(comfyStatus?.connected)}
+            comfyCheckpoints={Array.isArray(comfyStatus?.models?.checkpoints) ? comfyStatus.models.checkpoints : []}
             manualModeAvailable={Boolean(window.liaForge?.completeAssetStageManually)}
             onNotify={notify}
           />
@@ -923,8 +979,12 @@ function StudioPage({
   onOpenStageFolder,
   onOpenTool,
   onChooseExternalApplication,
+  onGenerateSpritesheet,
+  onGenerateConcept,
+  workflowRun,
   externalToolStatus,
   comfyUiConnected,
+  comfyCheckpoints,
   manualModeAvailable,
   onNotify,
 }) {
@@ -1003,8 +1063,12 @@ function StudioPage({
             onOpenStageFolder={onOpenStageFolder}
             onOpenTool={onOpenTool}
             onChooseExternalApplication={onChooseExternalApplication}
+            onGenerateSpritesheet={onGenerateSpritesheet}
+            onGenerateConcept={onGenerateConcept}
+            workflowRun={workflowRun}
             externalToolStatus={externalToolStatus}
             comfyUiConnected={comfyUiConnected}
+            comfyCheckpoints={comfyCheckpoints}
             manualModeAvailable={manualModeAvailable}
             onNotify={onNotify}
           />
@@ -1053,6 +1117,15 @@ function inputsForStage(asset, stageIndex) {
   return (asset.existingInputs || []).filter((input) => input.stageIndex === stageIndex);
 }
 
+function hasRegistered3dInput(asset) {
+  const paths = [
+    ...(asset.existingInputs || []).map((input) => input.path),
+    ...(asset.stageStatus?.[3]?.outputs || []),
+    ...(asset.stageStatus?.[2]?.outputs || []),
+  ];
+  return paths.some((file) => typeof file === 'string' && /\.(blend|glb|gltf|fbx|obj|stl)$/i.test(file));
+}
+
 function StageNavigator({ stages, completed, activeStage, onSelect, asset }) {
   const startAt = Math.max(0, Math.min(stages.length - 1, Number.isInteger(asset.startStageIndex) ? asset.startStageIndex : 0));
   const first = firstPending(completed, startAt, asset.stageStatus || []);
@@ -1085,20 +1158,33 @@ function StageNavigator({ stages, completed, activeStage, onSelect, asset }) {
   );
 }
 
-function StageWorkspace({ asset, stage, stageIndex, completed, onHandoff, onManualComplete, onSkipOptional, onOpenStageFolder, onOpenTool, onChooseExternalApplication, externalToolStatus, comfyUiConnected, manualModeAvailable, onNotify }) {
+function StageWorkspace({ asset, stage, stageIndex, completed, onHandoff, onManualComplete, onSkipOptional, onOpenStageFolder, onOpenTool, onChooseExternalApplication, onGenerateSpritesheet, onGenerateConcept, workflowRun, externalToolStatus, comfyUiConnected, comfyCheckpoints = [], manualModeAvailable, onNotify }) {
+  const [selectedCheckpoint, setSelectedCheckpoint] = useState('');
+  useEffect(() => { setSelectedCheckpoint(''); }, [asset.id]);
+  useEffect(() => {
+    if (selectedCheckpoint && !comfyCheckpoints.includes(selectedCheckpoint)) setSelectedCheckpoint('');
+  }, [comfyCheckpoints, selectedCheckpoint]);
   const startAt = Math.max(0, Math.min(4, Number.isInteger(asset.startStageIndex) ? asset.startStageIndex : 0));
   const isDone = Boolean(completed[stageIndex]);
-  const optionalSkipped = asset.stageStatus?.[stageIndex]?.status === 'skipped';
+  const stageRunStatus = asset.stageStatus?.[stageIndex]?.status;
+  const optionalSkipped = stageRunStatus === 'skipped';
   const isProvided = inputsForStage(asset, stageIndex).length > 0 || (stageIndex === 1 && Boolean(asset.referenceName || asset.references?.length));
   const isSkipped = stageIndex < startAt;
   const first = firstPending(completed, startAt, asset.stageStatus || []);
   const isLocked = !isSkipped && !optionalSkipped && stageIndex > first && !isDone;
   const canChangeStage = !isSkipped && !isLocked;
   const providedInputs = inputsForStage(asset, stageIndex);
-  const badge = isDone ? 'Output verificado' : optionalSkipped ? 'Opcional ignorada' : isProvided ? 'Entrada existente' : isSkipped ? 'Fora do ponto de entrada' : isLocked ? 'Na fila' : stageIndex === startAt ? 'Ponto de entrada' : 'Pendente';
+  const badge = isDone ? 'Output verificado' : optionalSkipped ? 'Opcional ignorada' : stageRunStatus === 'blocked' ? 'Bloqueado' : stageRunStatus === 'failed' ? 'Falha · revisar' : stageRunStatus === 'cancelled' ? 'Cancelado' : stageRunStatus === 'in_progress' ? 'Em andamento' : isProvided ? 'Entrada existente' : isSkipped ? 'Fora do ponto de entrada' : isLocked ? 'Na fila' : stageIndex === startAt ? 'Ponto de entrada' : 'Pendente';
   const primaryTool = stageIndex === 1 ? 'krita' : stageIndex >= 2 ? 'blender' : null;
   const primaryToolLabel = primaryTool === 'krita' ? 'Krita' : 'Blender';
   const primaryToolStatus = primaryTool ? externalToolStatus?.[primaryTool] : null;
+  const activeWorkflowRun = workflowRun?.assetId === asset.id ? workflowRun : null;
+  const isAutomatedRenderRunning = activeWorkflowRun?.status === 'running' && activeWorkflowRun.workflowId === 'render-spritesheet-from-existing-3d';
+  const isConceptWorkflowRunning = activeWorkflowRun?.status === 'running' && activeWorkflowRun.workflowId?.startsWith(`generate-${asset.type}-concept`);
+  const isAnotherWorkflowRunning = workflowRun?.status === 'running' && !isAutomatedRenderRunning && !isConceptWorkflowRunning;
+  const hasRequestedAnimations = Array.isArray(asset.animations) && asset.animations.some((animation) => typeof animation === 'string' && animation.trim());
+  const canRenderWithBlender = asset.type === 'item' || hasRequestedAnimations;
+  const currentWorkflowStep = activeWorkflowRun?.steps?.find((step) => step.status === 'in_progress');
 
   return (
     <section className="panel stage-workspace-panel">
@@ -1124,6 +1210,30 @@ function StageWorkspace({ asset, stage, stageIndex, completed, onHandoff, onManu
           {comfyUiConnected && <button className="button button-quiet" onClick={() => onOpenTool(asset, stageIndex, 'comfyui')}><ArrowUpRight size={13} />Abrir ComfyUI</button>}
           <button className="button button-quiet" onClick={() => onChooseExternalApplication(asset, stageIndex)}><Plus size={13} />Outro aplicativo</button>
         </div>
+      </div>}
+      {manualModeAvailable && stageIndex === 1 && comfyUiConnected && <div className="automated-stage-card automated-concept-card">
+        <div><strong>Gerar referência visual com ComfyUI</strong><small>Usa o brief deste asset e um checkpoint já instalado. Nada é baixado; a geração só começa após escolher o modelo e clicar. O PNG é uma referência para revisão, não cria 3D nem garante vistas ortográficas.</small>
+          {isConceptWorkflowRunning && <span className="automated-stage-progress">{currentWorkflowStep?.note || 'Aguardando o ComfyUI…'}{currentWorkflowStep?.progress > 0 ? ` · ${currentWorkflowStep.progress}%` : ''}</span>}
+          {comfyCheckpoints.length === 0 && <span className="automated-stage-hint">Nenhum checkpoint foi listado. Adicione um modelo pelo ComfyUI; a Lia Forge não baixa pesos.</span>}
+        </div>
+        <div className="automated-concept-actions">
+          {comfyCheckpoints.length > 0 && <select aria-label="Checkpoint instalado no ComfyUI" value={selectedCheckpoint} onChange={(event) => setSelectedCheckpoint(event.target.value)} disabled={isConceptWorkflowRunning}>
+            <option value="">Selecionar checkpoint instalado…</option>
+            {comfyCheckpoints.map((checkpoint) => <option key={checkpoint} value={checkpoint}>{checkpoint}</option>)}
+          </select>}
+          <button className="button button-primary" disabled={!canChangeStage || isConceptWorkflowRunning || isAnotherWorkflowRunning || !selectedCheckpoint} onClick={() => onGenerateConcept(asset, selectedCheckpoint)}>
+            {isConceptWorkflowRunning ? <RefreshCw className="spin" size={14} /> : <Sparkles size={14} />}{isConceptWorkflowRunning ? 'Gerando…' : 'Gerar conceito'}
+          </button>
+        </div>
+      </div>}
+      {manualModeAvailable && stageIndex === 4 && externalToolStatus?.blender?.installed && hasRegistered3dInput(asset) && <div className="automated-stage-card">
+        <div><strong>Gerar spritesheet automaticamente</strong><small>A Lia Forge executa o Blender em background usando um modelo 3D já registrado, cria PNG + JSON e valida os arquivos. Não cria o modelo a partir do prompt; personagens precisam ter ações de animação compatíveis no rig.</small>
+          {asset.type === 'character' && !hasRequestedAnimations && <span className="automated-stage-hint">Informe ao menos um nome de animação e confirme que o modelo contém a ação correspondente.</span>}
+          {isAutomatedRenderRunning && <span className="automated-stage-progress">{currentWorkflowStep?.note || 'Renderizando no Blender…'}{currentWorkflowStep?.progress > 0 ? ` · ${currentWorkflowStep.progress}%` : ''}</span>}
+        </div>
+        <button className="button button-primary" disabled={!canChangeStage || isAutomatedRenderRunning || isAnotherWorkflowRunning || !canRenderWithBlender} onClick={() => onGenerateSpritesheet(asset)}>
+          {isAutomatedRenderRunning ? <RefreshCw className="spin" size={14} /> : <Sparkles size={14} />}{isAutomatedRenderRunning ? 'Gerando…' : 'Gerar com Blender'}
+        </button>
       </div>}
       <div className="stage-workspace-footer">
         <div className="stage-output-summary"><div className="output-icon"><FileImage size={15} /></div><div><span>SAÍDA ESPERADA</span><strong>{stage.output}</strong></div><span className="output-format-tag">{stageIndex === 2 ? '3D' : stageIndex === 4 ? '2D' : 'ASSET'}</span></div>

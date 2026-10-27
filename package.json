@@ -12,7 +12,7 @@
     "build": "vite build",
     "desktop": "electron .",
     "postinstall": "install-electron",
-    "test": "node tests/mcp-smoke.mjs && node tests/vite-store-smoke.mjs && node tests/comfyui-client-smoke.mjs && node tests/task-manager-smoke.cjs && node tests/navigation-guard-smoke.cjs && node tests/manual-artifacts-smoke.cjs && node tests/external-tools-smoke.cjs",
+    "test": "node tests/mcp-smoke.mjs && node tests/vite-store-smoke.mjs && node tests/comfyui-client-smoke.mjs && node tests/task-manager-smoke.cjs && node tests/navigation-guard-smoke.cjs && node tests/manual-artifacts-smoke.cjs && node tests/external-tools-smoke.cjs && node tests/workflow-runner-smoke.cjs && node tests/blender-adapter-smoke.cjs",
     "preview": "vite preview --host 0.0.0.0",
     "package:win": "npm run build && electron-builder --win nsis --x64",
     "package:win:portable": "npm run build && electron-builder --win portable --x64"
@@ -34,6 +34,9 @@
     "appId": "com.liaforge.studio",
     "productName": "Lia Forge",
     "asar": true,
+    "asarUnpack": [
+      "scripts/blender_spritesheet.py"
+    ],
     "directories": {
       "output": "release"
     },
@@ -41,6 +44,7 @@
       "dist/**/*",
       "electron/**/*",
       "scripts/comfyui-client.mjs",
+      "scripts/blender_spritesheet.py",
       "workflows/comfyui/**/*",
       "assets/lia-forge.ico",
       "package.json"

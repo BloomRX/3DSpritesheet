@@ -7,6 +7,14 @@ contextBridge.exposeInMainWorld('liaForge', Object.freeze({
   openAssetStageFolder: (payload) => ipcRenderer.invoke('lia-forge:assets:manual:open-folder', payload),
   completeAssetStageManually: (payload) => ipcRenderer.invoke('lia-forge:assets:manual:complete-stage', payload),
   skipOptionalAssetStage: (payload) => ipcRenderer.invoke('lia-forge:assets:manual:skip-stage', payload),
+  renderSpritesheetFromExistingModel: (payload) => ipcRenderer.invoke('lia-forge:assets:auto:render-spritesheet', payload),
+  generateComfyUiConcept: (payload) => ipcRenderer.invoke('lia-forge:assets:auto:generate-concept', payload),
+  onWorkflowEvent: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('lia-forge:workflow:event', listener);
+    return () => ipcRenderer.removeListener('lia-forge:workflow:event', listener);
+  },
   getExternalToolStatus: () => ipcRenderer.invoke('lia-forge:tools:status'),
   openExternalTool: (payload) => ipcRenderer.invoke('lia-forge:tools:open', payload),
   chooseAndOpenExternalApplication: (payload) => ipcRenderer.invoke('lia-forge:tools:choose-and-open', payload),

@@ -2,6 +2,7 @@ const { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } = require('ele
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const path = require('node:path');
+const { randomUUID } = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const { ManagedProcessRegistry, buildCloseReport } = require('./task-manager.cjs');
 const {
@@ -12,7 +13,17 @@ const {
   stageLabel,
   validateStageOutputs,
 } = require('./manual-artifacts.cjs');
-const { getExternalToolStatus, launchApplication, launchExternalTool } = require('./external-tools.cjs');
+const { getExternalToolStatus, findExternalTool, launchApplication, launchExternalTool } = require('./external-tools.cjs');
+const { WorkflowRunner } = require('./workflow-runner.cjs');
+const { validatePngBuffer } = require('./png-validation.cjs');
+const {
+  buildBlenderSpritesheetArgs,
+  findModelInput,
+  parseFrameSize,
+  runProcess,
+  spawnBlender,
+  validateSpritesheetFiles,
+} = require('./blender-adapter.cjs');
 const { isTrustedNavigation: matchesTrustedNavigation } = require('./navigation-guard.cjs');
 
 const APP_ROOT = app.isPackaged ? app.getAppPath() : path.resolve(__dirname, '..');
@@ -26,6 +37,56 @@ let reportedActivities = [];
 let approvedClose = false;
 let closePromptOpen = false;
 let comfyClientPromise = null;
+const workflowRunner = new WorkflowRunner({
+  adapters: {
+    'blender-spritesheet': async ({ asset, inputPath, outputDirectory, scriptPath, frameSize, projectRoot: runProjectRoot, signal, reportProgress }) => {
+      const executable = findExternalTool('blender');
+      if (!executable) throw Object.assign(new Error('Blender não foi detectado. Instale/adicione o aplicativo por conta própria ou escolha um adapter compatível.'), { code: 'WORKFLOW_BLOCKED' });
+      const args = buildBlenderSpritesheetArgs({ scriptPath, inputPath, outputDirectory, asset, frameSize });
+      const { child } = taskRegistry.start(`Lia Forge · spritesheet · ${asset.name}`, executable, args, {
+        cwd: outputDirectory,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      await runProcess(child, { signal, onProgress: reportProgress });
+      const pngPath = path.join(outputDirectory, 'spritesheet.png');
+      const metadataPath = path.join(outputDirectory, 'spritesheet.json');
+      const realPngPath = await assertPathInsideProject(pngPath, { mustExist: true, label: 'Spritesheet PNG' });
+      const realMetadataPath = await assertPathInsideProject(metadataPath, { mustExist: true, label: 'Metadados JSON' });
+      const [pngBuffer, metadataContents] = await Promise.all([fs.readFile(realPngPath), fs.readFile(realMetadataPath, 'utf8')]);
+      let metadata;
+      try { metadata = JSON.parse(metadataContents); } catch { throw new Error('O Blender gerou um JSON de metadados inválido.'); }
+      const checked = validateSpritesheetFiles({ pngBuffer, metadata, frameSize });
+      const outputs = [realPngPath, realMetadataPath].map((output) => path.relative(runProjectRoot, output).split(path.sep).join('/'));
+      validateStageOutputs(asset.type, 4, outputs);
+      return {
+        outputs,
+        note: `Blender renderizou ${checked.frameCount} frames reais em ${checked.sheetWidth}×${checked.sheetHeight}px; revise visualmente a consistência e o pivô.`,
+      };
+    },
+    'comfyui-concept': async ({ asset, outputDirectory, projectRoot: runProjectRoot, prompt, checkpoint, workflowId, signal, reportProgress }) => {
+      const client = await getWorkflowClient();
+      const result = await client.runComfyUiConcept({ workflowId, prompt, checkpoint, outputDirectory, signal, onProgress: reportProgress });
+      const outputs = [];
+      for (const outputPath of result.outputs) {
+        const realPath = await assertPathInsideProject(outputPath, { mustExist: true, label: 'Concept PNG do ComfyUI' });
+        const bytes = await fs.readFile(realPath);
+        validatePngBuffer(bytes);
+        outputs.push(path.relative(runProjectRoot, realPath).split(path.sep).join('/'));
+      }
+      validateStageOutputs(asset.type, 1, outputs);
+      return {
+        outputs,
+        promptId: result.promptId,
+        checkpoint: result.checkpoint,
+        note: `ComfyUI gerou e validou ${outputs.length} imagem(ns) usando o checkpoint já instalado “${result.checkpoint}”. Revise a arte; ela não é um modelo 3D nem garante vistas ortográficas.`,
+      };
+    },
+  },
+  persist: persistWorkflowRun,
+  onEvent: (event) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('lia-forge:workflow:event', event);
+  },
+});
 
 function inside(root, candidate) {
   const relative = path.relative(root, candidate);
@@ -75,6 +136,18 @@ async function assertStoreInsideProject(storeFile) {
 
 function getAssetStoreFile() {
   return path.join(projectRoot, '.spriteforge', 'assets.json');
+}
+
+async function persistWorkflowRun(run) {
+  if (!projectRoot || !/^[0-9a-f-]{36}$/i.test(run?.id || '')) throw new Error('ID da execução inválido.');
+  const directory = path.join(projectRoot, '.spriteforge', 'runs');
+  const file = path.join(directory, `${run.id}.json`);
+  await fs.mkdir(directory, { recursive: true });
+  await assertPathInsideProject(directory, { label: 'Pasta de execuções' });
+  await assertPathInsideProject(file, { label: 'Estado da execução' });
+  const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  await fs.writeFile(temporary, `${JSON.stringify(run, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+  try { await fs.rename(temporary, file); } catch (error) { await fs.rm(temporary, { force: true }); throw error; }
 }
 
 async function readWorkspaceAssets() {
@@ -329,6 +402,134 @@ async function skipOptionalManualStage(event, { assetId, stageIndex }) {
   return { ...result, cancelled: false };
 }
 
+async function generateSpritesheetFromExistingModel(event, { assetId }) {
+  if (!mainWindow || event.sender !== mainWindow.webContents) throw new Error('Solicitação inválida.');
+  if (workflowRunner.activeRunId) throw new Error('Já existe uma execução da Lia Forge em andamento. Aguarde antes de iniciar outra.');
+  const context = await getManualStageContext(assetId, 4);
+  const sourceRelative = findModelInput(context.asset);
+  if (!sourceRelative) throw Object.assign(new Error('Não encontrei um modelo 3D registrado. Informe um modelo existente ou conclua a etapa de modelo/rig antes de gerar a spritesheet.'), { code: 'WORKFLOW_BLOCKED' });
+  const sourcePath = path.resolve(projectRoot, sourceRelative);
+  const realInputPath = await assertPathInsideProject(sourcePath, { mustExist: true, label: 'Modelo 3D de entrada' });
+  const sourceInfo = await fs.stat(realInputPath);
+  if (!sourceInfo.isFile() || sourceInfo.size <= 0) throw new Error('O modelo 3D de entrada está vazio ou não é um arquivo.');
+  if (context.asset.type === 'character' && !(context.asset.animations || []).length) {
+    throw Object.assign(new Error('Para renderizar um personagem, informe animações e tenha ações compatíveis no modelo/rig.'), { code: 'WORKFLOW_BLOCKED' });
+  }
+  const blenderExecutable = findExternalTool('blender');
+  if (!blenderExecutable) throw Object.assign(new Error('Blender não foi detectado. Nenhuma ferramenta foi instalada; verifique a instalação ou selecione um adapter compatível.'), { code: 'WORKFLOW_BLOCKED' });
+  const scriptPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'app.asar.unpacked', 'scripts', 'blender_spritesheet.py')
+    : path.join(APP_ROOT, 'scripts', 'blender_spritesheet.py');
+  try { await fs.access(scriptPath); } catch { throw new Error('O adapter Blender de spritesheet não está presente neste pacote.'); }
+  const runId = randomUUID();
+  const outputDirectory = path.join(context.folder, `run-${runId}`);
+  await assertPathInsideProject(outputDirectory, { label: 'Pasta de outputs da execução' });
+  await fs.mkdir(outputDirectory, { recursive: true });
+  const frameSize = parseFrameSize(context.asset.target);
+  const oldOutputs = context.asset.stageStatus?.[4]?.outputs || [];
+  const plan = {
+    id: runId,
+    workflowId: 'render-spritesheet-from-existing-3d',
+    assetId: context.asset.id,
+    steps: [{
+      id: 'render-and-pack',
+      title: 'Renderizar e empacotar spritesheet no Blender',
+      adapter: 'blender-spritesheet',
+      dependsOn: [],
+    }],
+  };
+  await persistManualStageResult(context, {
+    status: 'in_progress',
+    outputs: oldOutputs,
+    note: 'Executando adapter Blender em background; os outputs só serão registrados depois da validação.',
+  });
+
+  try {
+    const run = await workflowRunner.run(plan, {
+      asset: context.asset,
+      projectRoot,
+      inputPath: realInputPath,
+      sourceRelative,
+      outputDirectory,
+      scriptPath,
+      frameSize,
+    });
+    const outputs = run.result.outputs;
+    const result = await persistManualStageResult(context, {
+      status: 'completed',
+      outputs,
+      note: run.steps[0]?.note || 'Blender produziu e validou o PNG e JSON de metadados.',
+    });
+    return { ...result, runId, run, cancelled: false };
+  } catch (error) {
+    const run = error.run || workflowRunner.get(runId);
+    await persistManualStageResult(context, {
+      status: run?.status === 'blocked' ? 'blocked' : run?.status === 'cancelled' ? 'cancelled' : 'failed',
+      outputs: oldOutputs,
+      note: `Execução automática interrompida: ${error.message || 'erro desconhecido'}`,
+    }).catch(() => {});
+    throw Object.assign(new Error(error.message || 'A execução do Blender falhou.'), { code: error.code || 'WORKFLOW_FAILED', runId, run });
+  }
+}
+
+async function generateComfyUiConcept(event, { assetId, checkpoint }) {
+  if (!mainWindow || event.sender !== mainWindow.webContents) throw new Error('Solicitação inválida.');
+  if (workflowRunner.activeRunId) throw new Error('Já existe uma execução da Lia Forge em andamento. Aguarde antes de iniciar outra.');
+  const context = await getManualStageContext(assetId, 1);
+  const workflowId = context.asset.type === 'character' ? 'character-concept' : 'item-concept';
+  const prompt = [context.asset.brief, context.asset.prompt].filter((part) => typeof part === 'string' && part.trim()).join('\n\n');
+  if (prompt.trim().length < 12) throw Object.assign(new Error('Preencha o brief e o prompt antes de gerar um conceito.'), { code: 'WORKFLOW_BLOCKED' });
+  if (typeof checkpoint !== 'string' || !checkpoint.trim()) throw Object.assign(new Error('Selecione um checkpoint já instalado no ComfyUI. A Lia Forge não baixa pesos.'), { code: 'WORKFLOW_BLOCKED' });
+  const runId = randomUUID();
+  const outputDirectory = path.join(context.folder, `run-${runId}`);
+  await assertPathInsideProject(outputDirectory, { label: 'Pasta de outputs da execução ComfyUI' });
+  await fs.mkdir(outputDirectory, { recursive: true });
+  const oldOutputs = context.asset.stageStatus?.[1]?.outputs || [];
+  const plan = {
+    id: runId,
+    workflowId: `generate-${workflowId}`,
+    assetId: context.asset.id,
+    steps: [{
+      id: 'generate-concept',
+      title: 'Gerar e validar conceito no ComfyUI',
+      adapter: 'comfyui-concept',
+      dependsOn: [],
+    }],
+  };
+  await persistManualStageResult(context, {
+    status: 'in_progress',
+    outputs: oldOutputs,
+    note: 'ComfyUI foi acionado explicitamente com checkpoint instalado; aguardando imagem real e validação.',
+  });
+
+  try {
+    const run = await workflowRunner.run(plan, {
+      asset: context.asset,
+      projectRoot,
+      prompt,
+      checkpoint,
+      workflowId,
+      outputDirectory,
+    });
+    const generatedOutputs = run.result.outputs;
+    const outputs = [...new Set([...oldOutputs, ...generatedOutputs])];
+    const result = await persistManualStageResult(context, {
+      status: 'completed',
+      outputs,
+      note: run.steps[0]?.note || 'ComfyUI gerou um PNG real e o arquivo foi validado.',
+    });
+    return { ...result, runId, run, generatedOutputs, cancelled: false };
+  } catch (error) {
+    const run = error.run || workflowRunner.get(runId);
+    await persistManualStageResult(context, {
+      status: run?.status === 'blocked' ? 'blocked' : run?.status === 'cancelled' ? 'cancelled' : 'failed',
+      outputs: oldOutputs,
+      note: `Geração de conceito interrompida: ${error.message || 'erro desconhecido'}`,
+    }).catch(() => {});
+    throw Object.assign(new Error(error.message || 'A geração ComfyUI falhou.'), { code: error.code || 'WORKFLOW_FAILED', runId, run });
+  }
+}
+
 async function openInstalledExternalTool(event, { assetId, stageIndex, tool }) {
   if (!mainWindow || event.sender !== mainWindow.webContents) throw new Error('Solicitação inválida.');
   const context = await getManualStageContext(assetId, stageIndex, { checkPrerequisites: false });
@@ -562,6 +763,8 @@ function registerIpcHandlers() {
   ipcMain.handle('lia-forge:assets:manual:open-folder', (event, payload) => openManualStageFolder(event, payload || {}));
   ipcMain.handle('lia-forge:assets:manual:complete-stage', (event, payload) => completeManualStage(event, payload || {}));
   ipcMain.handle('lia-forge:assets:manual:skip-stage', (event, payload) => skipOptionalManualStage(event, payload || {}));
+  ipcMain.handle('lia-forge:assets:auto:render-spritesheet', (event, payload) => generateSpritesheetFromExistingModel(event, payload || {}));
+  ipcMain.handle('lia-forge:assets:auto:generate-concept', (event, payload) => generateComfyUiConcept(event, payload || {}));
   ipcMain.handle('lia-forge:tools:status', (event) => {
     if (!mainWindow || event.sender !== mainWindow.webContents) throw new Error('Solicitação inválida.');
     return getExternalToolStatus();

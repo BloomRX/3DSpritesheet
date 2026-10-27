@@ -1,6 +1,8 @@
 # Lia Forge — Game Asset Studio
 
-A Lia Forge organiza o fluxo de produção de **personagens e itens/armas/ferramentas** por 3D → 2D. Agentes são opcionais: você pode editar briefs, trabalhar manualmente nas suas ferramentas e registrar outputs reais, ou preparar um handoff para delegar. O usuário pode começar do zero ou retomar de conceitos, poses, modelos 3D e rigs existentes, sem refazer etapas anteriores. Veja [`docs/usage-workflows.md`](docs/usage-workflows.md) para o fluxo-alvo e rotas previstas.
+A Lia Forge foi pensada para **facilitar a criação de assets de jogos**. No fluxo-alvo, a pessoa configura o que quer (brief/referências, tipo de asset, saída e ponto de entrada — Prompt → 3D → 2D ou uma etapa posterior), inicia a tarefa e acompanha enquanto a Lia Forge coordena as ferramentas/adapters necessários, produz e valida os arquivos e entrega o resultado. Um agente externo é opcional; instalações, drivers e pesos/modelos só podem ocorrer com consentimento explícito.
+
+**Estado atual:** há duas fatias automáticas explícitas, ainda sem fluxo completo: gerar uma imagem de conceito no ComfyUI usando um checkpoint já instalado que a pessoa escolhe, e renderizar spritesheet + metadados no Blender a partir de um modelo 3D existente. A cadeia prompt → 3D → rig/animação → 2D, geração de modelos e rigging continuam pendentes. Veja [`docs/usage-workflows.md`](docs/usage-workflows.md) e [`docs/product-gap-analysis.md`](docs/product-gap-analysis.md).
 
 ## Abrir em janela desktop
 
@@ -49,9 +51,9 @@ O instalador NSIS sai em `release/`; para um executável portátil, use `npm run
 
 ## ComfyUI, workflows e AMD
 
-A tela **Atividade & ComfyUI** consulta (somente leitura) o endpoint local padrão `http://127.0.0.1:8188`: conexão, fila, dispositivos informados pelo ComfyUI e categorias de modelos/checkpoints instalados. Para outro endereço local configurado pelo usuário, use `COMFYUI_URL`.
+A tela **Atividade & ComfyUI** consulta o endpoint configurado (padrão `http://127.0.0.1:8188`): conexão, fila, dispositivos reportados e categorias de modelos/checkpoints instalados. Para outro endereço HTTP(S), configure `COMFYUI_URL`. No Asset Studio, a pessoa pode escolher explicitamente um checkpoint já listado e acionar a geração de uma imagem de referência para personagem ou item; o PNG é salvo e validado no workspace. Não instala ComfyUI nem baixa pesos. A imagem de conceito não é um modelo 3D, rig, animação ou spritesheet.
 
-Há dois workflows JSON de conceito, em `workflows/comfyui/`: um para personagem e outro para item. Eles precisam de um checkpoint compatível escolhido manualmente; usam um placeholder proposital e não baixam pesos. São referências de imagem, não geram 3D, rig, animações ou spritesheet.
+O botão “Gerar com Blender” renderiza uma spritesheet a partir de um modelo 3D existente dentro do workspace e grava PNG + JSON validados. Para personagens, o modelo precisa ter ações compatíveis e animações informadas; para itens, é criada uma sequência de turntable. Nenhuma dessas fatias cria modelos 3D ou rigs a partir do prompt.
 
 Para integração de agentes com ComfyUI, veja [`docs/comfyui.md`](docs/comfyui.md) e o servidor local first-party [`comfy-mcp`](https://github.com/Comfy-Org/comfy-mcp). Nenhum setup ComfyUI/MCP é executado automaticamente.
 
@@ -68,15 +70,16 @@ Os arquivos configurados ficam em `.spriteforge/models/`, ignorado pelo Git. O d
 - UI Lia Forge magenta/rosa, preto e branco, em janela desktop isolada ou modo web.
 - Workspace para personagens e itens com briefs, imagens de referência, escolha do ponto de entrada no fluxo 3D → 2D, caminhos de artefatos existentes, animações e destinos planejados.
 - Indicadores de atividade local, tarefas registradas via MCP, fila ComfyUI e dispositivos reportados.
-- Workflows ComfyUI de conceito exportáveis, sem checkpoint selecionado.
-- Modo sem agente na interface desktop: abra o Blender detectado (incluindo instalação Steam), o ComfyUI local quando estiver ativo ou escolha outro aplicativo instalado; a ferramenta abre com a pasta da etapa como diretório de trabalho. O brief exporta `brief.md`; depois, registre os arquivos reais. Nada é instalado automaticamente.
+- Geração explícita de conceito pelo ComfyUI: checkpoint escolhido da lista instalada, progresso real e PNG salvo/verificado na pasta de referências; não baixa pesos.
+- Renderização explícita via Blender de spritesheet + JSON a partir de modelo 3D já registrado; valida dimensões do atlas, metadados e retângulos dos frames antes de concluir a etapa.
+- Modo sem agente na interface desktop: abra Blender (incluindo instalação Steam), ComfyUI local ou outro aplicativo instalado; o brief exporta `brief.md` e outputs manuais podem ser registrados. Nada é instalado automaticamente.
 - Handoff estruturado opcional para Claude Code, Codex, OpenCode ou outro agente, com JSON de tarefa e contrato de saídas.
 - Servidor MCP opcional para briefs, tarefas e validação de saídas reais; ferramentas `spriteforge_*` mantidas por compatibilidade.
 - Armazenamento local: `.spriteforge/assets.json` no projeto/workspace; executável instalado sem projeto usa `Documents/Lia Forge`.
 
 ## Limites atuais
 
-A Lia Forge não inicia agentes, não envia workflows ao ComfyUI e não gera imagens, modelos 3D, rigs, animações nem spritesheets. O trabalho de criação é manual nas ferramentas escolhidas pelo usuário ou delegado a um agente. O modo manual registra apenas arquivos não vazios, de formatos esperados e dentro da pasta do asset; isso **não substitui revisão visual nem valida dimensões, alpha, rig ou qualidade artística**. O MCP continua opcional para quem prefere delegar.
+A Lia Forge não inicia agentes e ainda não executa a cadeia completa prompt → 3D → 2D. A geração ComfyUI limita-se a PNG de conceito; o Blender exige modelo existente e, para personagem, ações de animação compatíveis. Não há geração de modelo 3D, rigging, criação de animações, rotas Code → 2D/Manequim → 2D ou cenários. As verificações de arquivo não substituem revisão visual, checagem de pixels transparentes (o Blender só confirma que o PNG declara canal alpha), qualidade artística, consistência das vistas nem validação semântica de modelo/rig. O MCP continua opcional.
 
 Nenhum peso, licença ou GPU é presumido.
 
