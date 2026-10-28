@@ -1,16 +1,26 @@
 import hashlib
+import json
+import os
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 from pathlib import Path
 
+from scripts.lia_paths import resolve_lia_paths
 from scripts.spriteforge_launcher import (
     BootstrapError,
+    accepted_license,
+    acquire_model_download_lock,
     build_parser,
     comfyui_server_status,
     ensure_recommended_apps,
+    has_model_license_acceptance,
+    license_acceptance_file,
     model_slug,
     model_target_path,
+    record_model_license_acceptance,
+    release_model_download_lock,
     node_version_meets_minimum,
     normalized_command,
     package_dependencies_ready,
@@ -31,21 +41,98 @@ class BootstrapHelpersTest(unittest.TestCase):
         self.assertFalse(node_version_meets_minimum("v20.19.0"))
         self.assertFalse(node_version_meets_minimum("unknown"))
 
-    def test_model_target_stays_inside_cache(self):
-        target = model_target_path({"id": "depth-model", "filename": "weights.safetensors"})
-        self.assertEqual(target.name, "weights.safetensors")
-        self.assertEqual(target.parent.name, "depth-model")
-        self.assertTrue(target.parent.parent.name == "models")
+    def test_python_path_resolver_uses_brand_roots_without_creating_them(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "profile"
+            local = Path(directory) / "local"
+            roaming = Path(directory) / "roaming"
+            resolved = resolve_lia_paths(
+                env={"LOCALAPPDATA": str(local), "APPDATA": str(roaming)},
+                home_directory=home,
+                documents_directory=Path(directory) / "Documents",
+                system="Windows",
+                is_packaged=True,
+                cwd=Path(directory) / "source",
+            )
+            self.assertEqual(resolved["workspaceRoot"], home / "Lia" / "Forge")
+            self.assertEqual(resolved["legacyWorkspaceRoot"], Path(directory) / "Documents" / "Lia Forge")
+            self.assertEqual(resolved["modelDirectory"], local / "Lia" / "Modelos")
+            self.assertEqual(resolved["configDirectory"], roaming / "Lia" / "Forge" / "config")
+            self.assertFalse(local.exists())
+            self.assertFalse(roaming.exists())
 
-    def test_model_filename_cannot_escape_cache(self):
+    def test_model_target_stays_inside_shared_user_directory(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"LIA_MODELOS": directory}):
+            target = model_target_path({"id": "depth-model", "filename": "weights.safetensors"})
+            self.assertEqual(target.name, "weights.safetensors")
+            self.assertEqual(target.parent.name, "depth-model")
+            self.assertEqual(target.parent.parent, Path(directory).resolve())
+
+    def test_model_filename_cannot_escape_shared_directory(self):
         with self.assertRaises(BootstrapError):
             model_target_path({"id": "depth-model", "filename": "../outside.bin"})
+
+    def test_model_download_lock_serializes_shared_downloads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "models" / "selected-model" / "weights.bin"
+            partial = target.with_name(target.name + ".download")
+            lock_file = acquire_model_download_lock(target, partial)
+            self.assertTrue(lock_file.is_file())
+            with self.assertRaisesRegex(BootstrapError, "Outro processo"):
+                acquire_model_download_lock(target, partial)
+            release_model_download_lock(lock_file)
+            self.assertFalse(lock_file.exists())
+
+    def test_model_download_lock_reclaims_only_after_stale_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "models" / "selected-model" / "weights.bin"
+            partial = target.with_name(target.name + ".download")
+            lock_file = target.with_name(target.name + ".lock")
+            lock_file.parent.mkdir(parents=True)
+            lock_file.write_text("stale", encoding="utf-8")
+            partial.write_bytes(b"stale")
+            stale_time = time.time() - 60 * 60 - 1
+            os.utime(lock_file, (stale_time, stale_time))
+            os.utime(partial, (stale_time, stale_time))
+            acquired = acquire_model_download_lock(target, partial)
+            self.assertEqual(acquired, lock_file)
+            self.assertFalse(partial.exists())
+            release_model_download_lock(acquired)
 
     def test_sha256_file(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "weights.bin"
             path.write_bytes(b"spriteforge-test")
             self.assertEqual(sha256_file(path), hashlib.sha256(b"spriteforge-test").hexdigest())
+
+    def test_license_acceptance_uses_brand_config_directory(self):
+        with tempfile.TemporaryDirectory() as directory, patch("scripts.spriteforge_launcher.resolve_lia_paths", return_value={"configDirectory": Path(directory)}):
+            self.assertEqual(license_acceptance_file(), Path(directory) / "model-license-acceptances.json")
+
+    def test_model_license_consent_is_saved_outside_the_repository_and_bound_to_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            consent_file = Path(directory) / "AppData" / "Roaming" / "Lia" / "Forge" / "config" / "model-license-acceptances.json"
+            model = {
+                "id": "selected-model",
+                "licenseUrl": "https://example.test/license",
+                "sha256": "a" * 64,
+            }
+            self.assertFalse(has_model_license_acceptance(model, acceptance_file=consent_file))
+            record_model_license_acceptance(model, acceptance_file=consent_file)
+            self.assertTrue(has_model_license_acceptance(model, acceptance_file=consent_file))
+            self.assertFalse(has_model_license_acceptance({**model, "sha256": "b" * 64}, acceptance_file=consent_file))
+            stored = json.loads(consent_file.read_text(encoding="utf-8"))
+            self.assertEqual(stored["schemaVersion"], 1)
+            self.assertEqual(stored["accepted"][0]["licenseUrl"], model["licenseUrl"])
+            self.assertNotIn("licenseAccepted", model)
+
+    def test_yes_flag_never_accepts_model_license_automatically(self):
+        model = {"id": "selected-model", "licenseUrl": "https://example.test/license", "sha256": "a" * 64}
+        with patch("scripts.spriteforge_launcher.has_model_license_acceptance", return_value=False), patch(
+            "scripts.spriteforge_launcher.record_model_license_acceptance"
+        ) as record:
+            self.assertFalse(accepted_license(model, yes=True))
+        record.assert_not_called()
 
     def test_installed_npm_tree_matches_lockfile(self):
         self.assertTrue(package_dependencies_ready())
@@ -54,6 +141,11 @@ class BootstrapHelpersTest(unittest.TestCase):
         args = build_parser().parse_args([])
         self.assertFalse(args.web)
         self.assertFalse(args.no_browser)
+
+    def test_diagnostico_alias_is_available(self):
+        args = build_parser().parse_args(["diagnostico", "--json"])
+        self.assertEqual(args.command, "diagnostico")
+        self.assertTrue(args.json)
 
     def test_comfyui_probe_reports_unavailable_without_installing(self):
         with patch.dict("os.environ", {"COMFYUI_URL": "http://127.0.0.1:1"}):

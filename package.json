@@ -12,23 +12,23 @@
     "build": "vite build",
     "desktop": "electron .",
     "postinstall": "install-electron",
-    "test": "node tests/mcp-smoke.mjs && node tests/vite-store-smoke.mjs && node tests/comfyui-client-smoke.mjs && node tests/task-manager-smoke.cjs && node tests/navigation-guard-smoke.cjs && node tests/manual-artifacts-smoke.cjs && node tests/external-tools-smoke.cjs && node tests/workflow-runner-smoke.cjs && node tests/blender-adapter-smoke.cjs",
+    "test": "node tests/mcp-smoke.mjs && node tests/vite-store-smoke.mjs && node tests/comfyui-client-smoke.mjs && node tests/task-manager-smoke.cjs && node tests/navigation-guard-smoke.cjs && node tests/manual-artifacts-smoke.cjs && node tests/external-tools-smoke.cjs && node tests/workflow-runner-smoke.cjs && node tests/blender-adapter-smoke.cjs && node tests/lia-paths-smoke.cjs",
     "preview": "vite preview --host 0.0.0.0",
     "package:win": "npm run build && electron-builder --win nsis --x64",
     "package:win:portable": "npm run build && electron-builder --win portable --x64"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.2",
-    "lucide-react": "^0.468.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "zod": "^4.6.7"
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "lucide-react": "0.468.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "zod": "4.6.7"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.3.4",
-    "electron": "^45.0.0",
-    "electron-builder": "^26.18.0",
-    "vite": "^6.0.5"
+    "@vitejs/plugin-react": "4.7.0",
+    "electron": "45.0.0",
+    "electron-builder": "26.18.0",
+    "vite": "6.4.5"
   },
   "build": {
     "appId": "com.liaforge.studio",
@@ -47,7 +47,9 @@
       "scripts/blender_spritesheet.py",
       "workflows/comfyui/**/*",
       "assets/lia-forge.ico",
-      "package.json"
+      "package.json",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md"
     ],
     "win": {
       "icon": "assets/lia-forge.ico",
@@ -65,7 +67,9 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Lia Forge"
+      "shortcutName": "Lia Forge",
+      "perMachine": false,
+      "allowElevation": false
     }
   }
 }

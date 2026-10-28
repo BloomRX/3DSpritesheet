@@ -25,6 +25,7 @@ const {
   validateSpritesheetFiles,
 } = require('./blender-adapter.cjs');
 const { isTrustedNavigation: matchesTrustedNavigation } = require('./navigation-guard.cjs');
+const { resolveLiaForgePaths } = require('./paths.cjs');
 
 const APP_ROOT = app.isPackaged ? app.getAppPath() : path.resolve(__dirname, '..');
 const ASSET_STORE_MAX_BYTES = 24 * 1024 * 1024;
@@ -787,11 +788,34 @@ function registerIpcHandlers() {
 
 app.whenReady().then(async () => {
   nativeTheme.themeSource = 'dark';
-  projectRoot = process.env.SPRITEFORGE_PROJECT_ROOT
-    ? path.resolve(process.env.SPRITEFORGE_PROJECT_ROOT)
-    : app.isPackaged
-      ? path.join(app.getPath('documents'), 'Lia Forge')
-      : process.cwd();
+  const paths = resolveLiaForgePaths({
+    env: process.env,
+    homeDirectory: app.getPath('home'),
+    documentsDirectory: app.getPath('documents'),
+    platform: process.platform,
+    isPackaged: app.isPackaged,
+    cwd: process.cwd(),
+  });
+  projectRoot = paths.workspaceRoot;
+
+  if (paths.legacyWorkspaceRoot) {
+    let legacyWorkspaceExists = false;
+    try { legacyWorkspaceExists = fsSync.statSync(paths.legacyWorkspaceRoot).isDirectory(); } catch { /* No legacy workspace to preserve. */ }
+    if (legacyWorkspaceExists) {
+      const choice = await dialog.showMessageBox({
+        type: 'info',
+        title: 'Encontramos um workspace antigo',
+        message: 'A Lia Forge encontrou a pasta de workspace usada por uma versão anterior.',
+        detail: `Workspace antigo:\n${paths.legacyWorkspaceRoot}\n\nNova pasta padrão:\n${paths.workspaceRoot}\n\nNada será movido ou apagado. Escolher a pasta nova não migra os arquivos antigos; eles continuarão no local atual.`,
+        buttons: ['Continuar usando a pasta antiga', 'Usar a nova pasta'],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      });
+      if (choice.response === 0) projectRoot = paths.legacyWorkspaceRoot;
+    }
+  }
+
   await fs.mkdir(projectRoot, { recursive: true });
   registerIpcHandlers();
   openWindow();

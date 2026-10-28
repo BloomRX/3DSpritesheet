@@ -1,0 +1,17 @@
+# Decisões — Lia Forge
+
+Use um rótulo explícito: `confirmado` · `proposto` · `suposição` · `em aberto`.
+
+| # | Decisão | Rótulo | Data | Por quê | O que foi descartado |
+|---|---|---|---|---|---|
+| 1 | Lia Forge integra a marca Lia, mas deve funcionar sem Waifu, agente externo, conta ou internet obrigatória para as funções locais. | `confirmado` | 2026-10-28 | Princípio do kit e requisito do usuário. | Tornar a Waifu/agente pré-requisito. |
+| 2 | Não há ponte funcional com a Lia Waifu neste repositório. Futuro acesso deve ser opt-in, limitado a verbos declarados, revogável e aprovado na Lia Forge. | `confirmado` | 2026-10-28 | Não presumir protocolo nem transformar conversa em autorização. | Descoberta automática, escrita remota ou transferência de memória implícita. |
+| 3 | Agentes externos são opcionais; Lia Forge deve permitir uso direto por sua interface, e handoff não significa que o app executou o agente. | `confirmado` | 2026-10-28 | Requisito do usuário e transparência de execução. | Exigir Claude Code/Codex/OpenCode. |
+| 4 | `models` continua vazio; não baixar pesos sem escolha explícita, URL HTTPS, SHA-256, licença e consentimento separado. | `confirmado` | 2026-10-28 | O usuário não escolheu provider/modelo. | Presumir GPU, modelo, tamanho ou licença. |
+| 5 | Código próprio sob MIT; nome Lia, ícones e identidade visual fora da concessão MIT. Dependências devem ter versão fixa e índice de notices. | `confirmado` | 2026-10-28 | Regra de licenciamento do kit de marca. | Licenciar a marca junto com o código por acidente. |
+| 6 | Workspace do Electron empacotado sem override: `LIA_HOME/Forge` ou `%USERPROFILE%\Lia\Forge`. Diretório legado é detectado e escolhido em diálogo; nada é movido automaticamente. A troca da raiz ainda depende de variável de ambiente. | `proposto` | 2026-10-28 | Evitar OneDrive e preservar trabalho anterior; falta validação em Windows e seletor visual. | Abrir em `Documents` sem perguntar ou migrar silenciosamente. |
+| 7 | Modelos do downloader auxiliar apontam para `LIA_MODELOS` ou `%LOCALAPPDATA%\Lia\Modelos`; ComfyUI continua gerenciando seus próprios checkpoints. | `proposto` | 2026-10-28 | Separar dados compartilháveis do app e não alegar que a integração move pesos. | Mover ou copiar checkpoints automaticamente. |
+| 8 | Aceite de licença do modelo fica fora do repositório, em `%APPDATA%\Lia\Forge\config`, associado a ID, URL e SHA-256. `--yes` não aceita termos. | `confirmado` | 2026-10-28 | Consentimento verificável, não versionado e não reaproveitado após trocar artefato/licença. | Gravar `licenseAccepted` em `spriteforge.config.json`. |
+| 9 | ComfyUI é o único adapter de geração de conceito atual e permanece identificado como tal; endpoint configurável por `COMFYUI_URL`. | `confirmado` | 2026-10-28 | Neutralidade não pode esconder o backend realmente suportado. | Alegar suporte genérico a provider ainda não implementado. |
+| 10 | Registro comum `%APPDATA%\Lia\lia.json`, descoberta de apps e bridge Waifu não são implementados sem schema/protocolo conjunto. | `em aberto` | 2026-10-28 | O guia descreve proposta, mas este repositório não conhece o contrato da Waifu. | Criar conexão falsa ou adivinhar formato. |
+| 11 | Build NSIS foi configurado como instalação por usuário sem elevação; instalação real, desinstalação e primeira abertura continuam sem gate Windows. | `proposto` | 2026-10-28 | Código pode ser preparado por Git; confirmação exige execução na plataforma-alvo. | Declarar instalador validado a partir de build Linux/smoke tests. |

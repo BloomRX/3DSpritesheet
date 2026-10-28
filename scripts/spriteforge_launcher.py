@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -21,8 +22,13 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "spriteforge.config.json"
-MODEL_ROOT = ROOT / ".spriteforge" / "models"
+try:
+    from .lia_paths import model_directory, resolve_lia_paths
+except ImportError:  # The launcher is also executed directly as a script.
+    from lia_paths import model_directory, resolve_lia_paths
+
 MIN_NODE_VERSION = (22, 12, 0)
+MODEL_LOCK_STALE_SECONDS = 60 * 60
 MIN_NODE_VERSION_TEXT = ".".join(str(part) for part in MIN_NODE_VERSION)
 TOOL_LABELS = {
     "python": "Python runtime",
@@ -99,8 +105,75 @@ def load_config() -> dict[str, Any]:
     return config
 
 
-def save_config(config: dict[str, Any]) -> None:
-    CONFIG_PATH.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+def license_acceptance_file() -> Path:
+    return Path(resolve_lia_paths()["configDirectory"]) / "model-license-acceptances.json"
+
+
+def _license_acceptance_identity(model: dict[str, Any]) -> dict[str, str]:
+    return {
+        "id": model_slug(str(model.get("id", ""))),
+        "licenseUrl": str(model.get("licenseUrl", "")).strip(),
+        "sha256": str(model.get("sha256", "")).strip().lower(),
+    }
+
+
+def has_model_license_acceptance(model: dict[str, Any], *, acceptance_file: Path | None = None) -> bool:
+    identity = _license_acceptance_identity(model)
+    if not identity["licenseUrl"] or not re.fullmatch(r"[0-9a-f]{64}", identity["sha256"]):
+        return False
+    filename = acceptance_file or license_acceptance_file()
+    try:
+        stored = json.loads(filename.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False
+    except (OSError, json.JSONDecodeError) as exc:
+        raise BootstrapError(f"Não consegui ler o registro de aceite de licenças em {filename}: {exc}") from exc
+    if not isinstance(stored, dict) or stored.get("schemaVersion") != 1 or not isinstance(stored.get("accepted"), list):
+        raise BootstrapError(f"O registro de aceite de licenças tem formato inválido: {filename}")
+    return any(
+        isinstance(item, dict)
+        and item.get("id") == identity["id"]
+        and item.get("licenseUrl") == identity["licenseUrl"]
+        and str(item.get("sha256", "")).lower() == identity["sha256"]
+        for item in stored["accepted"]
+    )
+
+
+def record_model_license_acceptance(model: dict[str, Any], *, acceptance_file: Path | None = None) -> None:
+    identity = _license_acceptance_identity(model)
+    parsed_license = urllib.parse.urlparse(identity["licenseUrl"])
+    if parsed_license.scheme != "https" or not parsed_license.netloc or not re.fullmatch(r"[0-9a-f]{64}", identity["sha256"]):
+        raise BootstrapError("O modelo precisa de URL HTTPS para a licença e SHA-256 válido antes de registrar o aceite.")
+    filename = acceptance_file or license_acceptance_file()
+    existing: list[dict[str, Any]] = []
+    try:
+        stored = json.loads(filename.read_text(encoding="utf-8"))
+        if not isinstance(stored, dict) or stored.get("schemaVersion") != 1 or not isinstance(stored.get("accepted"), list):
+            raise BootstrapError(f"O registro de aceite de licenças tem formato inválido: {filename}")
+        existing = [item for item in stored["accepted"] if isinstance(item, dict)]
+    except FileNotFoundError:
+        pass
+    except json.JSONDecodeError as exc:
+        raise BootstrapError(f"O registro de aceite de licenças contém JSON inválido: {filename}") from exc
+    except OSError as exc:
+        raise BootstrapError(f"Não consegui ler o registro de aceite de licenças em {filename}: {exc}") from exc
+
+    record = {**identity, "acceptedAt": datetime.now(timezone.utc).isoformat()}
+    accepted = [item for item in existing if item.get("id") != identity["id"]]
+    accepted.append(record)
+    contents = json.dumps({"schemaVersion": 1, "accepted": accepted}, ensure_ascii=False, indent=2) + "\n"
+    filename.parent.mkdir(parents=True, exist_ok=True)
+    temporary = filename.with_name(f"{filename.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8") as stream:
+            stream.write(contents)
+        os.replace(temporary, filename)
+    except OSError as exc:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise BootstrapError(f"Não consegui salvar o aceite em {filename}: {exc}") from exc
 
 
 def normalized_command(command: list[str]) -> list[str] | str:
@@ -546,12 +619,62 @@ def model_target_path(model: dict[str, Any]) -> Path:
     filename = str(model.get("filename", ""))
     if not filename or Path(filename).name != filename or filename in {".", ".."}:
         raise BootstrapError(f"Nome de arquivo inválido para o modelo {model_id}; use apenas um nome, sem pastas.")
-    target = (MODEL_ROOT / model_id / filename).resolve()
+    models_directory = model_directory()
+    target = (models_directory / model_id / filename).resolve()
     try:
-        target.relative_to(MODEL_ROOT.resolve())
+        target.relative_to(models_directory.resolve())
     except ValueError as exc:
-        raise BootstrapError("O caminho do modelo tenta sair da pasta .spriteforge/models.") from exc
+        raise BootstrapError("O caminho do modelo tenta sair da pasta compartilhada Lia/Modelos.") from exc
     return target
+
+
+def acquire_model_download_lock(target: Path, partial: Path) -> Path:
+    """Serialize downloads into the shared model directory; reclaim only a 1h-stale lock."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = target.with_name(target.name + ".lock")
+    for _attempt in range(2):
+        try:
+            descriptor = os.open(lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            try:
+                lock_modified = lock_file.stat().st_mtime
+            except FileNotFoundError:
+                continue
+            try:
+                partial_modified = partial.stat().st_mtime
+                lock_modified = max(lock_modified, partial_modified)
+            except FileNotFoundError:
+                pass
+            if time.time() - lock_modified > MODEL_LOCK_STALE_SECONDS:
+                try:
+                    partial.unlink(missing_ok=True)
+                    lock_file.unlink(missing_ok=True)
+                except OSError as exc:
+                    raise BootstrapError(f"Não consegui recuperar a trava antiga de download {lock_file}: {exc}") from exc
+                continue
+            raise BootstrapError(f"Outro processo da Lia está baixando este modelo. Aguarde: {lock_file}")
+        except OSError as exc:
+            raise BootstrapError(f"Não consegui criar a trava de download {lock_file}: {exc}") from exc
+
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump({"pid": os.getpid(), "modelo": target.name, "criado_em": time.time()}, stream)
+                stream.write("\n")
+            return lock_file
+        except OSError as exc:
+            try:
+                lock_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise BootstrapError(f"Não consegui registrar a trava de download {lock_file}: {exc}") from exc
+    raise BootstrapError(f"Outra instância assumiu a trava de download {target.name}; tente novamente.")
+
+
+def release_model_download_lock(lock_file: Path) -> None:
+    try:
+        lock_file.unlink(missing_ok=True)
+    except OSError as exc:
+        raise BootstrapError(f"Não consegui remover a trava de download {lock_file}: {exc}") from exc
 
 
 def sha256_file(path: Path) -> str:
@@ -585,11 +708,11 @@ def verify_models(config: dict[str, Any], *, print_results: bool = True) -> tupl
             if valid_model_checksum(model):
                 ok += 1
                 if print_results:
-                    print(f"  OK {model_id} · checksum válido · {target.relative_to(ROOT)}")
+                    print(f"  OK {model_id} · checksum válido · {target}")
             else:
                 failed += 1
                 if print_results:
-                    print(f"  FALTA/INVALIDADO {model_id} · esperado: {target.relative_to(ROOT)}")
+                    print(f"  FALTA/INVALIDADO {model_id} · esperado: {target}")
         except (BootstrapError, OSError) as exc:
             failed += 1
             if print_results:
@@ -597,23 +720,35 @@ def verify_models(config: dict[str, Any], *, print_results: bool = True) -> tupl
     return ok, failed
 
 
-def accepted_license(model: dict[str, Any], *, yes: bool, config: dict[str, Any]) -> bool:
-    if model.get("licenseAccepted") is True:
+def accepted_license(model: dict[str, Any], *, yes: bool) -> bool:
+    license_url = str(model.get("licenseUrl", "")).strip()
+    parsed_license = urllib.parse.urlparse(license_url)
+    if parsed_license.scheme != "https" or not parsed_license.netloc:
+        print(f"  Bloqueado {model.get('id', '?')}: informe uma URL HTTPS para a licença.")
+        return False
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", str(model.get("sha256", ""))):
+        print(f"  Bloqueado {model.get('id', '?')}: informe o SHA-256 esperado antes de aceitar a licença.")
+        return False
+    if has_model_license_acceptance(model):
         return True
-    license_url = model.get("licenseUrl") or "(sem URL informada; confira a licença na página oficial do modelo)"
     print(f"\n  Licença do modelo {model.get('id', '?')}: {license_url}")
     if yes:
-        print("  --yes não aceita licenças automaticamente. Revise a licença e marque licenseAccepted=true no config.")
+        print("  --yes não aceita licenças automaticamente. Leia os termos e execute o comando interativo para registrar o aceite.")
         return False
     if not ask_yes_no("Você leu e aceita os termos de uso deste peso?", default=False):
         return False
-    model["licenseAccepted"] = True
-    save_config(config)
+    record_model_license_acceptance(model)
     return True
 
 
 def download_model(model: dict[str, Any]) -> None:
     model_id = model_slug(str(model.get("id", "")))
+    license_url = str(model.get("licenseUrl", "")).strip()
+    parsed_license = urllib.parse.urlparse(license_url)
+    if parsed_license.scheme != "https" or not parsed_license.netloc:
+        raise BootstrapError(f"Modelo {model_id}: configure uma URL HTTPS para a licença antes de baixar.")
+    if not has_model_license_acceptance(model):
+        raise BootstrapError(f"Modelo {model_id}: o aceite explícito da licença ainda não foi registrado.")
     url = str(model.get("url", ""))
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme != "https" or not parsed.netloc:
@@ -625,45 +760,52 @@ def download_model(model: dict[str, Any]) -> None:
     if valid_model_checksum(model):
         print(f"  OK {model_id} já está baixado e verificado.")
         return
-    size = model.get("sizeBytes")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if isinstance(size, int) and size > 0:
-        free = shutil.disk_usage(target.parent).free
-        if free < size + 50 * 1024 * 1024:
-            raise BootstrapError(f"Espaço insuficiente para {model_id}: precisa de aproximadamente {size / 1024**3:.2f} GiB.")
     partial = target.with_name(target.name + ".download")
-    request = urllib.request.Request(url, headers={"User-Agent": "LiaForgeBootstrap/0.1"})
-    print(f"  Baixando {model_id} → {target.relative_to(ROOT)}")
-    digest = hashlib.sha256()
-    downloaded = 0
-    last_report = time.monotonic()
+    lock_file = acquire_model_download_lock(target, partial)
     try:
-        with urllib.request.urlopen(request, timeout=45) as response, partial.open("wb") as output:
-            total = int(response.headers.get("Content-Length", "0") or 0)
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                output.write(chunk)
-                digest.update(chunk)
-                downloaded += len(chunk)
-                now = time.monotonic()
-                if now - last_report > 1.2:
-                    if total:
-                        print(f"\r  {downloaded / 1024**2:.0f}/{total / 1024**2:.0f} MiB", end="", flush=True)
-                    else:
-                        print(f"\r  {downloaded / 1024**2:.0f} MiB", end="", flush=True)
-                    last_report = now
-        print()
-        actual = digest.hexdigest()
-        if actual != expected:
+        if valid_model_checksum(model):
+            print(f"  OK {model_id} já está baixado e verificado.")
+            return
+        size = model.get("sizeBytes")
+        if isinstance(size, int) and size > 0:
+            free = shutil.disk_usage(target.parent).free
+            if free < size + 50 * 1024 * 1024:
+                raise BootstrapError(f"Espaço insuficiente para {model_id}: precisa de aproximadamente {size / 1024**3:.2f} GiB.")
+        request = urllib.request.Request(url, headers={"User-Agent": "LiaForgeBootstrap/0.1"})
+        print(f"  Baixando {model_id} → {target}")
+        digest = hashlib.sha256()
+        downloaded = 0
+        last_report = time.monotonic()
+        try:
+            with urllib.request.urlopen(request, timeout=45) as response, partial.open("wb") as output:
+                total = int(response.headers.get("Content-Length", "0") or 0)
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    output.write(chunk)
+                    digest.update(chunk)
+                    downloaded += len(chunk)
+                    now = time.monotonic()
+                    os.utime(lock_file, None)
+                    if now - last_report > 1.2:
+                        if total:
+                            print(f"\r  {downloaded / 1024**2:.0f}/{total / 1024**2:.0f} MiB", end="", flush=True)
+                        else:
+                            print(f"\r  {downloaded / 1024**2:.0f} MiB", end="", flush=True)
+                        last_report = now
+            print()
+            actual = digest.hexdigest()
+            if actual != expected:
+                partial.unlink(missing_ok=True)
+                raise BootstrapError(f"SHA-256 não confere para {model_id}. Arquivo parcial removido; nenhum peso foi instalado.")
+            partial.replace(target)
+            print(f"  OK {model_id} verificado · {downloaded / 1024**2:.1f} MiB")
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
             partial.unlink(missing_ok=True)
-            raise BootstrapError(f"SHA-256 não confere para {model_id}. Arquivo parcial removido; nenhum peso foi instalado.")
-        partial.replace(target)
-        print(f"  OK {model_id} verificado · {downloaded / 1024**2:.1f} MiB")
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        partial.unlink(missing_ok=True)
-        raise BootstrapError(f"Falha ao baixar {model_id}: {exc}") from exc
+            raise BootstrapError(f"Falha ao baixar {model_id}: {exc}") from exc
+    finally:
+        release_model_download_lock(lock_file)
 
 
 def install_models(config: dict[str, Any], *, yes: bool, dry_run: bool = False) -> None:
@@ -679,16 +821,21 @@ def install_models(config: dict[str, Any], *, yes: bool, dry_run: bool = False) 
             if valid_model_checksum(model):
                 print(f"  OK {model_id} já existe e passou no SHA-256.")
                 continue
-            if dry_run and model.get("licenseAccepted") is not True:
+            if dry_run and not has_model_license_acceptance(model):
                 print(f"  Dry-run: exige revisão/aceite da licença ({model.get('licenseUrl') or 'URL não informada'}).")
                 continue
-            if not accepted_license(model, yes=yes, config=config):
+            if not accepted_license(model, yes=yes):
                 print(f"  Ignorado {model_id}; a licença ainda não foi aceita.")
                 continue
             if dry_run:
                 print(f"  Dry-run: baixaria {model.get('url', '(URL não configurada)')} → {model_target_path(model)}")
                 continue
-            if not yes and not ask_yes_no(f"Baixar o peso {model_id}?", default=True):
+            size = model.get("sizeBytes")
+            size_label = f"{size / 1024**3:.2f} GiB" if isinstance(size, int) and size > 0 else "tamanho não informado"
+            print(f"  Origem: {model.get('url', '(URL não configurada)')}")
+            print(f"  Tamanho informado: {size_label}")
+            print(f"  Destino: {model_target_path(model)}")
+            if not yes and not ask_yes_no(f"Baixar o peso {model_id} agora?", default=False):
                 print(f"  Ignorado {model_id}.")
                 continue
             download_model(model)
@@ -733,7 +880,15 @@ def comfyui_server_status() -> dict[str, Any]:
         }
 
 
-def print_doctor(config: dict[str, Any], *, as_json: bool = False) -> int:
+def print_doctor(config: dict[str, Any], *, as_json: bool = False, project_root: Path | None = None) -> int:
+    workspace_root = (project_root or Path(os.environ.get("SPRITEFORGE_PROJECT_ROOT") or Path.cwd())).expanduser().resolve()
+    workspace_source = "--project-root" if project_root else "SPRITEFORGE_PROJECT_ROOT" if os.environ.get("SPRITEFORGE_PROJECT_ROOT") else "diretório atual"
+    resolved_models_directory = model_directory()
+    path_checks = [
+        {"name": "workspace", "path": str(workspace_root), "source": workspace_source, "exists": workspace_root.is_dir()},
+        {"name": "modelos compartilhados", "path": str(resolved_models_directory), "source": "LIA_MODELOS" if os.environ.get("LIA_MODELOS") else "padrão Lia", "exists": resolved_models_directory.is_dir()},
+        {"name": "configuração de desenvolvimento", "path": str(CONFIG_PATH), "source": "repositório Lia Forge", "exists": CONFIG_PATH.is_file()},
+    ]
     statuses = {name: tool_status(name) for name in ("node", "npm", "blender", "krita", "claude", "codex", "opencode", "ollama", "comfy", "comfy-mcp")}
     statuses["comfyui"] = comfyui_server_status()
     electron_package = ROOT / "node_modules" / "electron" / "package.json"
@@ -766,7 +921,8 @@ def print_doctor(config: dict[str, Any], *, as_json: bool = False) -> int:
         "packageManager": get_package_manager()[0],
         "tools": statuses,
         "models": {"configured": len(config.get("models", [])), "verified": ok_models, "missingOrInvalid": bad_models},
-        "modelDirectory": str(MODEL_ROOT),
+        "modelDirectory": str(resolved_models_directory),
+        "paths": path_checks,
     }
     required_ready = (
         statuses["python"]["meetsMinimum"]
@@ -808,8 +964,12 @@ def print_doctor(config: dict[str, Any], *, as_json: bool = False) -> int:
             print(f"      {state['path']}")
     deps = statuses["projectDependencies"]["installed"]
     print(f"  {'OK' if deps else 'FALTA'} Pacotes do projeto: {'instalados' if deps else 'serão instalados por npm ci'}")
+    print("  Caminhos (o diagnóstico não cria nem move pastas):")
+    for path_check in path_checks:
+        marker = "OK" if path_check["exists"] else "AUSENTE"
+        print(f"    {marker} {path_check['name']}: {path_check['path']} · origem: {path_check['source']}")
     if config.get("models"):
-        print(f"  Pesos: {ok_models}/{len(config['models'])} verificado(s) em {MODEL_ROOT}")
+        print(f"  Pesos: {ok_models}/{len(config['models'])} verificado(s) em {model_directory()}")
     else:
         print("  Pesos: nenhum configurado (nenhum download automático sem escolha e licença).")
     return 0 if required_ready else 1
@@ -962,7 +1122,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Verifica o PC, prepara dependências locais e abre a janela desktop Lia Forge.",
         epilog="Sem argumentos, executa o fluxo completo. Use 'doctor' para somente verificar o que já está instalado.",
     )
-    parser.add_argument("command", nargs="?", choices=["run", "setup", "doctor", "models", "mcp-install"], help="run (padrão), setup, doctor, models ou mcp-install")
+    parser.add_argument("command", nargs="?", choices=["run", "setup", "doctor", "diagnostico", "models", "mcp-install"], help="run (padrão), setup, doctor/diagnostico, models ou mcp-install")
     parser.add_argument("models_action", nargs="?", choices=["list", "install", "verify"], help="ação para o comando models")
     parser.add_argument("--yes", action="store_true", help="responde sim para instalações/downloads recomendados (não aceita licenças de modelos automaticamente)")
     parser.add_argument("--no-tools", action="store_true", help="não instalar Blender/Krita; Node e dependências do painel continuam necessários")
@@ -987,8 +1147,8 @@ def main(argv: list[str] | None = None) -> int:
     command = args.command or "run"
     try:
         config = load_config()
-        if command == "doctor":
-            return print_doctor(config, as_json=args.json)
+        if command in {"doctor", "diagnostico"}:
+            return print_doctor(config, as_json=args.json, project_root=args.project_root)
         if command == "models":
             action = args.models_action or "list"
             print_step(f"Pesos de modelos · {action}")
@@ -999,8 +1159,8 @@ def main(argv: list[str] | None = None) -> int:
                 for model in models:
                     target = model_target_path(model)
                     exists = valid_model_checksum(model)
-                    print(f"  {'OK' if exists else 'FALTA'} {model.get('id', '?')} · {target.relative_to(ROOT)}")
-                    print(f"      licença aceita: {'sim' if model.get('licenseAccepted') else 'não'}")
+                    print(f"  {'OK' if exists else 'FALTA'} {model.get('id', '?')} · {target}")
+                    print(f"      licença aceita: {'sim' if has_model_license_acceptance(model) else 'não'}")
                 return 0
             if action == "verify":
                 _, failed = verify_models(config)

@@ -2,6 +2,8 @@
 
 A Lia Forge foi pensada para **facilitar a criação de assets de jogos**. No fluxo-alvo, a pessoa configura o que quer (brief/referências, tipo de asset, saída e ponto de entrada — Prompt → 3D → 2D ou uma etapa posterior), inicia a tarefa e acompanha enquanto a Lia Forge coordena as ferramentas/adapters necessários, produz e valida os arquivos e entrega o resultado. Um agente externo é opcional; instalações, drivers e pesos/modelos só podem ocorrer com consentimento explícito.
 
+Como parte do ecossistema Lia, o app permanece autônomo: não depende da Lia Waifu, de agente externo, conta ou conexão permanente à internet. Não existe uma ponte funcional com a Waifu neste repositório. O nome e os ícones da marca não fazem parte da licença MIT do código. Consulte [`docs/lia-ecosystem-integration.md`](docs/lia-ecosystem-integration.md), [`LICENSE`](LICENSE) e [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+
 **Estado atual:** há duas fatias automáticas explícitas, ainda sem fluxo completo: gerar uma imagem de conceito no ComfyUI usando um checkpoint já instalado que a pessoa escolhe, e renderizar spritesheet + metadados no Blender a partir de um modelo 3D existente. A cadeia prompt → 3D → rig/animação → 2D, geração de modelos e rigging continuam pendentes. Veja [`docs/usage-workflows.md`](docs/usage-workflows.md) e [`docs/product-gap-analysis.md`](docs/product-gap-analysis.md).
 
 ## Abrir em janela desktop
@@ -18,14 +20,15 @@ No Windows:
 .\lia-forge.cmd
 ```
 
-O bootstrap detecta Python 3.8+, Node.js 22.12+, npm, Blender (incluindo instalações em bibliotecas Steam no Windows), Krita e os agentes/runtimes já instalados. Instala as dependências do projeto quando necessário e abre uma janela própria Electron — sem misturar o painel com as guias do navegador. O launcher antigo `spriteforge` / `spriteforge.cmd` continua como alias de compatibilidade.
+Os wrappers `lia-forge`/`lia-forge.cmd` são o bootstrap de desenvolvimento a partir do repositório: detectam Python 3.8+, Node.js 22.12+, npm, Blender (incluindo instalações em bibliotecas Steam no Windows), Krita e agentes/runtimes já instalados. Podem instalar as dependências fixadas no lockfile e abrem uma janela Electron — sem misturar o painel com as guias do navegador. A instalação de Node.js, Blender ou Krita pelo sistema exige confirmação quando for necessária. Eles não são o instalador final. O app Electron empacotado deve funcionar sem Python, Node, npm ou Git, mas esse pacote ainda não foi produzido nem validado em Windows. O launcher antigo `spriteforge` / `spriteforge.cmd` continua como alias de compatibilidade.
 
 No primeiro uso, Blender e Krita são opcionais e o bootstrap pede confirmação antes de instalá-los. A instalação das dependências Electron precisa baixar o runtime oficial do Electron. O bootstrap **não instala ComfyUI, drivers, `comfy-mcp`, modelos ou pesos**.
 
 ### Diagnóstico e modos alternativos
 
 ```bash
-./lia-forge doctor          # detecta ferramentas e consulta a API local do ComfyUI; não instala
+./lia-forge doctor          # alias: diagnostico; mostra ferramentas/caminhos e consulta ComfyUI; não instala
+./lia-forge diagnostico --json # mesmo diagnóstico em JSON
 ./lia-forge setup           # prepara as dependências, sem abrir o app
 ./lia-forge --web           # abre o painel web no navegador
 ./lia-forge --no-browser    # inicia somente o servidor web para um agente
@@ -36,7 +39,7 @@ No primeiro uso, Blender e Krita são opcionais e o bootstrap pede confirmação
 
 Com a janela desktop aberta, feche pelo botão X. Se houver atividade registrada, a Lia Forge mostra uma confirmação com as tarefas e processos encontrados. Ao confirmar, encerra somente processos que **ela própria iniciou**. Filas e agentes externos — inclusive jobs de uma instância ComfyUI que já estava rodando — são identificados como externos e não são interrompidos.
 
-O workspace usa o diretório atual quando iniciado pelo launcher (`SPRITEFORGE_PROJECT_ROOT`). Um executável instalado sem essa variável usa `Documents/Lia Forge`. O formato/caminho histórico `.spriteforge/` e o namespace `spriteforge_*` do MCP são mantidos para compatibilidade com workspaces e configurações existentes.
+O workspace explícito usa `SPRITEFORGE_PROJECT_ROOT`. O Electron empacotado, sem override, usa `%USERPROFILE%\Lia\Forge` no Windows (`~/Lia/Forge` nos outros sistemas); `LIA_HOME` permite escolher outra raiz comum por variável de ambiente (não há seletor de pasta na interface nesta versão). Se encontrar `Documents/Lia Forge` de uma versão anterior, pergunta qual pasta abrir e não move nem apaga nada. O formato/caminho histórico `.spriteforge/` e o namespace `spriteforge_*` do MCP são mantidos para compatibilidade. Veja [`docs/lia-ecosystem-integration.md`](docs/lia-ecosystem-integration.md).
 
 ## Executável Windows
 
@@ -61,9 +64,9 @@ Para integração de agentes com ComfyUI, veja [`docs/comfyui.md`](docs/comfyui.
 
 ## Pesos de modelos
 
-A lista `models` em [`spriteforge.config.json`](spriteforge.config.json) fica vazia deliberadamente. Antes de adicionar pesos, escolha provider/modelo e revise origem HTTPS, checksum SHA-256, licença, tamanho e compatibilidade de hardware. Um registro de peso precisa incluir `licenseUrl`, `sha256`, URL HTTPS e `licenseAccepted: true`; downloads incompletos não são mantidos.
+A lista `models` em [`spriteforge.config.json`](spriteforge.config.json) fica vazia deliberadamente. Antes de habilitar um peso, o responsável pelo projeto precisa escolher modelo/runtime e revisar URL HTTPS, SHA-256, licença, tamanho e compatibilidade. O aceite interativo fica em `%APPDATA%\Lia\Forge\config\model-license-acceptances.json`, vinculado ao ID, URL da licença e SHA-256; não é gravado no repositório. `--yes` nunca aceita termos. Downloads incompletos não são tratados como modelos instalados. O bootstrapper serializa downloads concorrentes do mesmo arquivo e recupera uma trava sem atividade após uma hora; ainda não há catálogo/índice compartilhado com outros gestores de modelos.
 
-Os arquivos configurados ficam em `.spriteforge/models/`, ignorado pelo Git. O downloader não aceita pesos sem checksum e não marca licenças como aceitas automaticamente.
+Se o downloader do bootstrap vier a receber pesos configurados, ele usará a pasta compartilhável da marca: `%LOCALAPPDATA%\Lia\Modelos` no Windows (ou `XDG_DATA_HOME/Lia/Modelos` em sistemas Unix), sobrescrita por `LIA_MODELOS`. Isso não altera a pasta interna do ComfyUI: a interface apenas consulta os checkpoints que o endpoint informado reporta. A lista do downloader continua vazia; nenhum peso foi movido ou baixado.
 
 ## Funcionalidades atuais
 
@@ -75,7 +78,7 @@ Os arquivos configurados ficam em `.spriteforge/models/`, ignorado pelo Git. O d
 - Modo sem agente na interface desktop: abra Blender (incluindo instalação Steam), ComfyUI local ou outro aplicativo instalado; o brief exporta `brief.md` e outputs manuais podem ser registrados. Nada é instalado automaticamente.
 - Handoff estruturado opcional para Claude Code, Codex, OpenCode ou outro agente, com JSON de tarefa e contrato de saídas.
 - Servidor MCP opcional para briefs, tarefas e validação de saídas reais; ferramentas `spriteforge_*` mantidas por compatibilidade.
-- Armazenamento local: `.spriteforge/assets.json` no projeto/workspace; executável instalado sem projeto usa `Documents/Lia Forge`.
+- Armazenamento de trabalho visível: `.spriteforge/assets.json` e `.spriteforge/runs/` dentro do workspace escolhido; Electron empacotado usa `%USERPROFILE%\Lia\Forge` por padrão e pergunta antes de abrir um workspace legado em `Documents/Lia Forge`.
 
 ## Limites atuais
 
