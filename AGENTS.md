@@ -4,7 +4,8 @@ Lia Forge é um app desktop Electron/React para organizar a produção de assets
 
 ## Antes de qualquer trabalho
 
-1. Leia `docs/guia-externo/` e `docs/lia-ecosystem-integration.md` antes de trabalhar; o kit é referência e a adaptação da Forge define o que de fato se aplica.
+1. Leia `docs/BRAND-STANDARDS.md` para as regras comuns de marca.
+2. Leia `docs/guia-externo/` e `docs/lia-ecosystem-integration.md`; o kit externo é referência, enquanto a adaptação da Forge define o que se aplica.
 2. Leia `memory-bank/estado.md`; ele distingue o que foi executado do que continua pendente.
 3. Leia `memory-bank/padroes.md` para os comandos de teste e convenções; consulte `memory-bank/decisoes.md` antes de alterar identidade, armazenamento, modelos, instalação ou integração entre apps.
 

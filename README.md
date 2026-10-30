@@ -106,3 +106,8 @@ npm test
 python -m unittest discover -s tests -v
 npm run build
 ```
+
+
+## Padrão comum da marca
+
+Consulte [`docs/BRAND-STANDARDS.md`](docs/BRAND-STANDARDS.md) para identidade, linguagem, licenças e princípios transversais. `docs/guia-externo/00-PADRAO-DA-MARCA.md` continua sendo referência de distribuição/armazenamento desktop; não é o design system geral da marca.
